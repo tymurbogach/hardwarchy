@@ -134,12 +134,12 @@ Panel {
             required property var modelData
             required property int index
 
-            readonly property bool off: root.isHidden(modelData.key)
+            readonly property bool rowOff: root.isHidden(modelData.key)
 
             rowLabel: modelData.label
             rowValue: modelData.value
-            rowValueColor: root.metricColor(modelData, off)
-            off: off
+            rowValueColor: root.metricColor(modelData, rowOff)
+            off: rowOff
             dimValue: modelData.dim === true
             atFirst: index === 0
             atLast: index === root.metrics.length - 1
