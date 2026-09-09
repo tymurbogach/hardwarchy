@@ -594,6 +594,7 @@ function metrics(reading, opts, prefs) {
       severity: metricsRamp(cpuP, warnU, critU),
       dim: false,
       percent: cpuP,
+      ratio: cpuP / 100,
       tempC: null,
       rpm: null,
       mhz: cpuMhz,
@@ -665,6 +666,7 @@ function metrics(reading, opts, prefs) {
       severity: metricsRamp(gpuP, warnU, critU),
       dim: false,
       percent: gpuP,
+      ratio: gpuP / 100,
       tempC: null,
       rpm: null,
       mhz: gpuMhz,
@@ -756,6 +758,9 @@ function metrics(reading, opts, prefs) {
       severity: memSev,
       dim: false,
       percent: memP,
+      ratio: (memP !== null ? memP
+        : (memUsedKib !== null && memTotalKib !== null && memTotalKib > 0
+           ? memUsedKib / memTotalKib * 100 : null)) / 100,
       tempC: null,
       rpm: null,
       mhz: null,
