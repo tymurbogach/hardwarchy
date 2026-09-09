@@ -8,9 +8,7 @@ import qs.Commons
 import qs.Ui
 import "Model/Metrics.js" as Metrics
 import "Styles/Modes.js" as Modes
-import "Menu/MetricRow.qml" as MetricRow
-import "Menu/Chip.qml" as Chip
-import "Menu/Stepper.qml" as Stepper
+import "Menu"
 
 Panel {
   id: root
