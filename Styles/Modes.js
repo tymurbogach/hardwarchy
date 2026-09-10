@@ -7,16 +7,50 @@ function modesIsArray(v) {
   return Object.prototype.toString.call(v) === "[object Array]";
 }
 
-var MODES = ["digits", "gauges", "combo"];
+// Two states, not three: "Number" or "Bar" for how a usage-like value
+// draws. Whether two halves of a device (cpu usage+temp, net down+up,
+// disk usage+io) join into one cell no longer depends on this at all —
+// see PAIR_KINDS and buildStripCells below — so there is no third
+// "joined" mode to pick; a group either shows the pair joined (always,
+// when both halves are visible) with the first half as a number or a
+// bar, exactly the two axes a user actually wants control over.
+var MODES = ["digits", "gauges"];
 
 var MODE_LABELS = {
-  digits: "Digits",
-  gauges: "Gauges",
-  combo: "Combo"
+  digits: "Number",
+  gauges: "Bar"
 };
 
+// Which two metric kinds combo-mode joins into one cell, per device, and
+// the metric-key suffixes that carry them (device + "_" + kind). The
+// first kind takes the gauge/intensity slot, the second the digit/detail
+// slot — same roles as usage+temp today, generalized to net's down+up and
+// disk's usage+io. Whether the first slot actually draws a gauge still
+// depends on that metric carrying a numeric `.ratio` (see modesIsUsage) —
+// net's "down" has none, so a joined net cell never fakes a progress bar.
+var PAIR_KINDS = {
+  cpu: { first: "usage", second: "temp" },
+  gpu: { first: "usage", second: "temp" },
+  net: { first: "down", second: "up" },
+  disk: { first: "usage", second: "io" }
+};
+
+function modesPairKindsFor(dev) {
+  if (Object.prototype.hasOwnProperty.call(PAIR_KINDS, dev)) {
+    return PAIR_KINDS[dev];
+  }
+  return null;
+}
+
+function modesKindOf(m) {
+  if (m && typeof m.kind === "string") {
+    return m.kind;
+  }
+  return "";
+}
+
 function normalizeMode(m) {
-  if (m === "digits" || m === "gauges" || m === "combo") {
+  if (m === "digits" || m === "gauges") {
     return m;
   }
   return "digits";
@@ -26,9 +60,6 @@ function nextMode(m) {
   var cur = normalizeMode(m);
   if (cur === "digits") {
     return "gauges";
-  }
-  if (cur === "gauges") {
-    return "combo";
   }
   return "digits";
 }
@@ -41,19 +72,6 @@ function modesIsUsage(m) {
     return true;
   }
   if (typeof m.key === "string" && m.key.indexOf("usage") >= 0) {
-    return true;
-  }
-  return false;
-}
-
-function modesIsTemp(m) {
-  if (m === null || m === undefined || typeof m !== "object") {
-    return false;
-  }
-  if (m.kind === "temp") {
-    return true;
-  }
-  if (typeof m.key === "string" && m.key.indexOf("temp") >= 0) {
     return true;
   }
   return false;
@@ -128,40 +146,24 @@ function modesMakeGaugeCell(m, withDigits) {
 // digits: one metric cell per item.
 // gauges: usage items become gauge cells, the rest stay metric cells.
 // combo: per-device usage plus temp join, lone halves use gauge rules.
+// Build strip cells from an already visible and ordered metric list.
+// Pairing is unconditional: whenever a device's PAIR_KINDS halves are
+// both visible, they always join into one cell — that's the only way
+// "usage + temp" (or down + up, usage + io) ever reads as one thing
+// instead of two separately-labelled values. `mode` only decides
+// whether the gaugeable half (kind "usage") draws as a number or a bar,
+// for both joined and standalone cells alike.
 function buildStripCells(visible, mode, opts) {
   var list = [];
   if (modesIsArray(visible)) {
     list = visible;
   }
   var norm = normalizeMode(mode);
+  var useGauge = norm === "gauges";
   var showDigits = modesShowDigits(opts);
   var words = modesWordLabels(opts);
   var out = [];
   var i = 0;
-
-  if (norm === "digits") {
-    for (i = 0; i < list.length; i++) {
-      if (list[i]) {
-        out.push(modesMakeMetricCell(list[i], words));
-      }
-    }
-    return out;
-  }
-
-  if (norm === "gauges") {
-    for (i = 0; i < list.length; i++) {
-      var g = list[i];
-      if (!g) {
-        continue;
-      }
-      if (modesIsUsage(g)) {
-        out.push(modesMakeGaugeCell(g, showDigits));
-      } else {
-        out.push(modesMakeMetricCell(g, words));
-      }
-    }
-    return out;
-  }
 
   var byKey = {};
   for (i = 0; i < list.length; i++) {
@@ -181,31 +183,36 @@ function buildStripCells(visible, mode, opts) {
     }
     var dev = modesDevice(cur);
     var isUsage = modesIsUsage(cur);
-    var isTemp = modesIsTemp(cur);
-    if ((dev === "cpu" || dev === "gpu") && (isUsage || isTemp)) {
-      var usageKey = dev + "_usage";
-      var tempKey = dev + "_temp";
-      var usage = byKey[usageKey] || null;
-      var temp = byKey[tempKey] || null;
-      if (!usage && isUsage) {
-        usage = cur;
+    var pair = modesPairKindsFor(dev);
+    if (pair !== null) {
+      var firstKey = dev + "_" + pair.first;
+      var secondKey = dev + "_" + pair.second;
+      var firstM = byKey[firstKey] || null;
+      var secondM = byKey[secondKey] || null;
+      if (!firstM && modesKindOf(cur) === pair.first) {
+        firstM = cur;
       }
-      if (!temp && isTemp) {
-        temp = cur;
+      if (!secondM && modesKindOf(cur) === pair.second) {
+        secondM = cur;
       }
-      if (usage && temp && !handled[usageKey] && !handled[tempKey]) {
+      if (firstM && secondM && !handled[firstKey] && !handled[secondKey]) {
         out.push({
           cell: "joined",
-          key: usageKey + "+" + tempKey,
-          usage: usage,
-          temp: temp
+          key: firstKey + "+" + secondKey,
+          usage: firstM,
+          temp: secondM,
+          // A word-labelled group always reads as its label text, never
+          // an icon+bar — the bar visual and the icon/word choice both
+          // hang off the same glyph slot, so words wins.
+          bare: words === true,
+          gaugeFirst: useGauge && !words
         });
-        handled[usageKey] = true;
-        handled[tempKey] = true;
+        handled[firstKey] = true;
+        handled[secondKey] = true;
         continue;
       }
       handled[cur.key] = true;
-      if (isUsage) {
+      if (modesKindOf(cur) === pair.first && useGauge && !words) {
         out.push(modesMakeGaugeCell(cur, showDigits));
       } else {
         out.push(modesMakeMetricCell(cur, words));
@@ -213,7 +220,7 @@ function buildStripCells(visible, mode, opts) {
       continue;
     }
     handled[cur.key] = true;
-    if (isUsage) {
+    if (isUsage && useGauge && !words) {
       out.push(modesMakeGaugeCell(cur, showDigits));
     } else {
       out.push(modesMakeMetricCell(cur, words));

@@ -73,8 +73,31 @@ printf 'Composite\n' > "$FAKE_ROOT/hwmon3/temp1_label"
 
 mkdir -p "$EMPTY_ROOT"
 
+# --- fake /proc/net/dev: only eth0 should win (lo/docker0/veth excluded) --
+FAKE_NET_DEV="$FAKE_ROOT.net-dev"
+cat > "$FAKE_NET_DEV" <<'NETEOF'
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:    1000      10    0    0    0     0          0         0     1000      10    0    0    0     0       0          0
+docker0:    5000      50    0    0    0     0          0         0     6000      60    0    0    0     0       0          0
+veth123:    7000      70    0    0    0     0          0         0     8000      80    0    0    0     0       0          0
+   eth0:  900000     900    0    0    0     0          0         0   100000     100    0    0    0     0       0          0
+NETEOF
+
+# --- fake /proc/diskstats: only the whole disk "sda" should be counted ----
+FAKE_DISKSTATS="$FAKE_ROOT.diskstats"
+cat > "$FAKE_DISKSTATS" <<'DISKEOF'
+   8       0 sda 100 0 5000 10 200 0 6000 20 0 0 0 0 0 0 0
+   8       1 sda1 50 0 2000 5 100 0 3000 10 0 0 0 0 0 0 0
+   7       0 loop0 10 0 500 1 5 0 500 1 0 0 0 0 0 0 0
+ 253       0 dm-0 20 0 800 2 10 0 900 3 0 0 0 0 0 0 0
+DISKEOF
+
 # --- run one-shot against the fake tree -----------------------------------
-if ! MONITOR_HWMON_ROOT="$FAKE_ROOT" MONITOR_DRM_ROOT="$FAKE_DRM" "$SYSREAD" > "$OUT_MAIN" 2>"$FAKE_ROOT.stderr"; then
+if ! MONITOR_HWMON_ROOT="$FAKE_ROOT" MONITOR_DRM_ROOT="$FAKE_DRM" \
+    MONITOR_NET_DEV_FILE="$FAKE_NET_DEV" MONITOR_DISKSTATS_PATH="$FAKE_DISKSTATS" \
+    MONITOR_ROOT_MOUNT="$FAKE_ROOT" \
+    "$SYSREAD" > "$OUT_MAIN" 2>"$FAKE_ROOT.stderr"; then
   cat "$FAKE_ROOT.stderr" >&2
   fail "sysread one-shot exited non-zero against fake tree"
 fi
@@ -106,7 +129,7 @@ def check(name, cond, detail=""):
         print(msg, file=sys.stderr)
         failures.append(name)
 
-check("schema==1", doc.get("schema") == 1, f"got {doc.get('schema')!r}")
+check("schema==2", doc.get("schema") == 2, f"got {doc.get('schema')!r}")
 check("temp parsed (Tctl preference wins)", doc.get("temp") == 45, f"got {doc.get('temp')!r}")
 
 fans = doc.get("fans")
@@ -136,15 +159,38 @@ def num_or_null(v):
 check("clocks present-or-null", num_or_null(doc.get("cpu_mhz")) and num_or_null(doc.get("gpu_mhz")), f"got cpu_mhz={doc.get('cpu_mhz')!r} gpu_mhz={doc.get('gpu_mhz')!r}")
 check("gpu_mhz from amdgpu freq", doc.get("gpu_mhz") == 1500, f"got {doc.get('gpu_mhz')!r}")
 
+net = doc.get("net")
+ok_net = isinstance(net, dict) and net.get("iface") == "eth0"
+check("net picks the busiest real interface, not lo/docker/veth", ok_net, f"got {net!r}")
+if ok_net:
+    # One-shot priming reads the same static fixture twice with nothing
+    # changing in between, so the delta -- and therefore the rate -- is
+    # deterministically zero rather than null.
+    check("net rate is a real zero, not still priming", net.get("down_bps") == 0 and net.get("up_bps") == 0, f"got {net!r}")
+
+disk = doc.get("disk")
+ok_disk = isinstance(disk, dict) and disk.get("mount") == sys.argv[2]
+check("disk reports the configured mount", ok_disk, f"got {disk!r}")
+if ok_disk:
+    used_pct = disk.get("used_pct")
+    check("disk used_pct is a real percentage (can't fake statvfs, so range-check only)",
+          isinstance(used_pct, int) and 0 <= used_pct <= 100, f"got {used_pct!r}")
+    check("disk I/O only counts the whole disk (sda), not sda1/loop0/dm-0",
+          disk.get("read_bps") == 0 and disk.get("write_bps") == 0, f"got {disk!r}")
+
 sys.exit(1 if failures else 0)
 PYEOF
 
-if ! python3 "$PY_ASSERT_MAIN" "$OUT_MAIN"; then
+if ! python3 "$PY_ASSERT_MAIN" "$OUT_MAIN" "$FAKE_ROOT"; then
   fail "main fake-tree assertions failed (see FAIL lines above)"
 fi
 
 # --- empty tree: nulls but valid JSON with fans==[] -----------------------
-if ! MONITOR_HWMON_ROOT="$EMPTY_ROOT" MONITOR_DRM_ROOT="$FAKE_DRM" "$SYSREAD" > "$OUT_EMPTY" 2>"$FAKE_ROOT.stderr-empty"; then
+if ! MONITOR_HWMON_ROOT="$EMPTY_ROOT" MONITOR_DRM_ROOT="$FAKE_DRM" \
+    MONITOR_NET_DEV_FILE="$EMPTY_ROOT/no-such-net-dev" \
+    MONITOR_DISKSTATS_PATH="$EMPTY_ROOT/no-such-diskstats" \
+    MONITOR_ROOT_MOUNT="$EMPTY_ROOT" \
+    "$SYSREAD" > "$OUT_EMPTY" 2>"$FAKE_ROOT.stderr-empty"; then
   cat "$FAKE_ROOT.stderr-empty" >&2
   fail "sysread one-shot exited non-zero against empty tree"
 fi
@@ -166,11 +212,15 @@ def check(name, cond, detail=""):
         print(f"FAIL: {name} ({detail})", file=sys.stderr)
         failures.append(name)
 
-check("empty tree schema==1", doc.get("schema") == 1, f"got {doc.get('schema')!r}")
+check("empty tree schema==2", doc.get("schema") == 2, f"got {doc.get('schema')!r}")
 check("empty tree temp null", doc.get("temp") is None, f"got {doc.get('temp')!r}")
 check("empty tree gpu null", doc.get("gpu") is None, f"got {doc.get('gpu')!r}")
 check("empty tree gpu_temp null", doc.get("gpu_temp") is None, f"got {doc.get('gpu_temp')!r}")
 check("empty tree fans==[]", doc.get("fans") == [], f"got {doc.get('fans')!r}")
+check("empty tree net null (no readable /proc/net/dev)", doc.get("net") is None, f"got {doc.get('net')!r}")
+empty_disk = doc.get("disk")
+ok_empty_disk = isinstance(empty_disk, dict) and empty_disk.get("read_bps") is None and empty_disk.get("write_bps") is None
+check("empty tree disk I/O null (no readable diskstats), usage still answers", ok_empty_disk, f"got {empty_disk!r}")
 check("empty tree gpu_detail null", doc.get("gpu_detail") is None, f"got {doc.get('gpu_detail')!r}")
 
 sys.exit(1 if failures else 0)

@@ -30,6 +30,23 @@ Item {
   property bool dimmed: false
   property string tooltipText: ""
 
+  // How many leading characters of `value` are padding (e.g. the "0" in
+  // a zero-padded "03%") to draw in `secondaryColor` instead of
+  // `foreground`. Zero (the default) draws the whole value in one color,
+  // identical to before this existed.
+  property int padLen: 0
+  property color secondaryColor: root.foreground
+
+  // A joined cell's second half (e.g. temp, fused right after usage with
+  // no separator) — its own single-color segment, independent of
+  // `value`'s pad split, since "temp reads secondary" is a whole-value
+  // choice while `value`'s own padding is only ever one leading digit.
+  property string trailValue: ""
+  property bool trailSecondary: false
+  // Ink-to-ink gap before the trailing segment, same unit as iconGap —
+  // keeps the two fused halves near each other without gluing them.
+  property real trailGap: 0
+
   // Gauge mode: -1 draws glyph plus value; 0..1 draws glyph plus a
   // vertical gauge, with the value only when it is non-empty.
   property real gaugeRatio: -1
@@ -73,10 +90,17 @@ Item {
   readonly property real glyphAdvance: root.showGlyph ? root.inkWidth + root.iconGap : 0
   readonly property real gaugeAdvance: root.showGauge ? root.gaugeWidth + root.iconGap : 0
 
+  readonly property string valuePadText: root.padLen > 0 ? root.value.substring(0, root.padLen) : ""
+  readonly property string valueMainText: root.padLen > 0 ? root.value.substring(root.padLen) : root.value
+
+  readonly property bool showTrail: root.trailValue !== ""
+  readonly property real trailAdvance: root.showTrail ? root.trailGap : 0
+
   readonly property real contentWidth: root.glyphAdvance + root.gaugeAdvance
-    + (root.showValue ? valueText.implicitWidth : 0)
+    + (root.showValue ? valuePad.implicitWidth + valueMain.implicitWidth : 0)
+    + (root.showTrail ? root.trailAdvance + valueTrail.implicitWidth : 0)
   readonly property real contentHeight: Math.max(glyphText.implicitHeight,
-    valueText.implicitHeight, root.showGauge ? root.gaugeHeight : 0)
+    valueMain.implicitHeight, root.showGauge ? root.gaugeHeight : 0)
 
   implicitWidth: root.vertical
     ? (root.slotSize > 0 ? root.slotSize : root.contentHeight)
@@ -112,13 +136,41 @@ Item {
       renderType: Text.NativeRendering
     }
 
+    // Split in two so a zero-padded value ("03%") can draw its padding
+    // character in a quieter secondary color than the significant digit
+    // — padLen 0 (the default) leaves valuePad empty and valueMain at
+    // the same position/text as the single Text this replaced.
     Text {
-      id: valueText
-      visible: root.showValue
+      id: valuePad
+      visible: root.showValue && root.padLen > 0
       x: root.glyphAdvance + root.gaugeAdvance
       anchors.verticalCenter: parent.verticalCenter
-      text: root.value
+      text: root.valuePadText
+      color: root.secondaryColor
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize
+      renderType: Text.NativeRendering
+    }
+
+    Text {
+      id: valueMain
+      visible: root.showValue
+      x: root.glyphAdvance + root.gaugeAdvance + valuePad.implicitWidth
+      anchors.verticalCenter: parent.verticalCenter
+      text: root.valueMainText
       color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize
+      renderType: Text.NativeRendering
+    }
+
+    Text {
+      id: valueTrail
+      visible: root.showTrail
+      x: root.glyphAdvance + root.gaugeAdvance + valuePad.implicitWidth + valueMain.implicitWidth + root.trailAdvance
+      anchors.verticalCenter: parent.verticalCenter
+      text: root.trailValue
+      color: root.trailSecondary ? root.secondaryColor : root.foreground
       font.family: root.fontFamily
       font.pixelSize: root.fontSize
       renderType: Text.NativeRendering

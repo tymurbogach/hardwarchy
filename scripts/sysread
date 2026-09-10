@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # sysread - one-shot / streaming hardware sensor collector.
 # Reads /proc, /sys/class/hwmon (+ drm for Intel) and nvidia-smi (if present).
-# Emits one JSON object per line, schema version 1. See SPEC section 2.
+# Emits one JSON object per line, schema version 2. See SPEC section 2.
 set -u
 
 HWMON_ROOT="${MONITOR_HWMON_ROOT:-/sys/class/hwmon}"
 DRM_ROOT="${MONITOR_DRM_ROOT:-/sys/class/drm}"
+NET_DEV_FILE="${MONITOR_NET_DEV_FILE:-/proc/net/dev}"
+ROOT_MOUNT="${MONITOR_ROOT_MOUNT:-/}"
+DISKSTATS_PATH="${MONITOR_DISKSTATS_PATH:-/proc/diskstats}"
 
 # ---------------------------------------------------------------------------
 # Persistent state (priming / once-only detection)
@@ -18,6 +21,14 @@ CPU_CORES_CACHED=""
 CPU_INFO_DONE=0
 INTEL_PREV_BUSY=""
 INTEL_PREV_TIME_NS=""
+NET_IFACE_DECIDED=0
+NET_IFACE=""
+NET_PREV_RX=""
+NET_PREV_TX=""
+NET_PREV_TIME_NS=""
+DISK_PREV_READ=""
+DISK_PREV_WRITE=""
+DISK_PREV_TIME_NS=""
 
 # Per-reading values (JSON fragments: number or the literal "null", except
 # fans/load/detail/model which hold ready-made JSON snippets).
@@ -37,6 +48,13 @@ VAL_CPU_MODEL_JSON="null"
 VAL_CPU_CORES="null"
 LOAD_JSON="null"
 GPU_DETAIL_JSON="null"
+VAL_NET_DOWN="null"
+VAL_NET_UP="null"
+NET_JSON="null"
+VAL_DISK_USED_PCT="null"
+VAL_DISK_READ="null"
+VAL_DISK_WRITE="null"
+DISK_JSON="null"
 # NVIDIA per-reading cache (filled by exactly one nvidia-smi call per reading)
 NVIDIA_UTIL="null"
 NVIDIA_TEMP="null"
@@ -800,6 +818,209 @@ provider_load() {
 }
 
 # ---------------------------------------------------------------------------
+# provider: network (one interface, picked once; rate via wall-clock delta)
+# ---------------------------------------------------------------------------
+
+# is_real_iface <name>: excludes loopback and common virtual interfaces so
+# the "busiest interface" guess doesn't land on a container/VPN veth pair.
+is_real_iface() {
+  case "$1" in
+    lo|docker*|veth*|br-*|virbr*|tun*|tap*|wg*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# pick_net_iface: choose the non-virtual interface with the most combined
+# rx+tx bytes at startup, same one-shot-decision spirit as pick_gpu_source.
+pick_net_iface() {
+  NET_IFACE_DECIDED=1
+  NET_IFACE=""
+  [[ -r "$NET_DEV_FILE" ]] || return 0
+  local best="" best_total=-1
+  local line name rest rx tx
+  while IFS= read -r line; do
+    line="$(trim "$line")"
+    [[ "$line" == *:* ]] || continue
+    name="$(trim "${line%%:*}")"
+    [[ -n "$name" ]] || continue
+    is_real_iface "$name" || continue
+    rest="${line#*:}"
+    read -r rx _ _ _ _ _ _ _ tx _ <<< "$rest"
+    is_uint "$rx" || continue
+    is_uint "$tx" || continue
+    local total=$((rx + tx))
+    if [[ "$total" -gt "$best_total" ]]; then
+      best_total="$total"
+      best="$name"
+    fi
+  done < "$NET_DEV_FILE"
+  NET_IFACE="$best"
+}
+
+provider_net() {
+  VAL_NET_DOWN="null"
+  VAL_NET_UP="null"
+  if [[ "$NET_IFACE_DECIDED" -eq 0 ]]; then
+    pick_net_iface
+  fi
+  if [[ -z "$NET_IFACE" || ! -r "$NET_DEV_FILE" ]]; then
+    return 0
+  fi
+  local line name rest rx tx found=0
+  while IFS= read -r line; do
+    line="$(trim "$line")"
+    [[ "$line" == *:* ]] || continue
+    name="$(trim "${line%%:*}")"
+    [[ "$name" == "$NET_IFACE" ]] || continue
+    rest="${line#*:}"
+    read -r rx _ _ _ _ _ _ _ tx _ <<< "$rest"
+    found=1
+    break
+  done < "$NET_DEV_FILE"
+  if [[ "$found" -eq 0 ]] || ! is_uint "$rx" || ! is_uint "$tx"; then
+    return 0
+  fi
+  local now_ns=""
+  now_ns="$(date +%s%N 2>/dev/null || true)"
+  now_ns="$(trim "$now_ns")"
+  if [[ ! "$now_ns" =~ ^[0-9]+$ ]]; then
+    local now_s
+    now_s="$(date +%s 2>/dev/null || true)"
+    if is_uint "$now_s"; then
+      now_ns="$((now_s * 1000000000))"
+    else
+      return 0
+    fi
+  fi
+  if [[ -z "$NET_PREV_RX" || -z "$NET_PREV_TX" || -z "$NET_PREV_TIME_NS" ]]; then
+    NET_PREV_RX="$rx"
+    NET_PREV_TX="$tx"
+    NET_PREV_TIME_NS="$now_ns"
+    return 0
+  fi
+  local d_rx=$((rx - NET_PREV_RX))
+  local d_tx=$((tx - NET_PREV_TX))
+  local d_time=$((now_ns - NET_PREV_TIME_NS))
+  NET_PREV_RX="$rx"
+  NET_PREV_TX="$tx"
+  NET_PREV_TIME_NS="$now_ns"
+  if [[ "$d_time" -le 0 || "$d_rx" -lt 0 || "$d_tx" -lt 0 ]]; then
+    return 0
+  fi
+  VAL_NET_DOWN="$(awk -v db="$d_rx" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
+  VAL_NET_UP="$(awk -v db="$d_tx" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
+}
+
+assemble_net() {
+  if [[ -z "$NET_IFACE" ]]; then
+    NET_JSON="null"
+    return 0
+  fi
+  NET_JSON="{\"iface\":$(json_quote "$NET_IFACE"),\"down_bps\":$VAL_NET_DOWN,\"up_bps\":$VAL_NET_UP}"
+}
+
+# ---------------------------------------------------------------------------
+# provider: disk (usage % of ROOT_MOUNT via stat -f; I/O via /proc/diskstats)
+# ---------------------------------------------------------------------------
+
+# is_whole_disk <device name>: real block devices only, no partitions,
+# loop devices or device-mapper nodes, so I/O isn't double-counted.
+is_whole_disk() {
+  case "$1" in
+    sd[a-z]|sd[a-z][a-z]) return 0 ;;
+    vd[a-z]) return 0 ;;
+    hd[a-z]) return 0 ;;
+    nvme[0-9]*n[0-9]*)
+      case "$1" in *p[0-9]*) return 1 ;; esac
+      return 0 ;;
+    mmcblk[0-9]*)
+      case "$1" in *p[0-9]*) return 1 ;; esac
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Disk usage has no /proc or /sys equivalent to statvfs(2) — stat(1) is the
+# thinnest wrapper around the same syscall this project already trusts
+# coreutils for elsewhere (date, sort). %b/%a are block counts, so the
+# block size itself cancels out of the ratio.
+provider_disk_usage() {
+  VAL_DISK_USED_PCT="null"
+  local out=""
+  out="$(stat -f -c '%b %a' "$ROOT_MOUNT" 2>/dev/null || true)"
+  [[ -n "$(trim "$out")" ]] || return 0
+  local blocks avail
+  read -r blocks avail <<< "$out"
+  is_uint "$blocks" || return 0
+  is_uint "$avail" || return 0
+  [[ "$blocks" -gt 0 ]] || return 0
+  local used=$((blocks - avail))
+  if [[ "$used" -lt 0 ]]; then
+    used=0
+  fi
+  VAL_DISK_USED_PCT="$(((used * 100 + blocks / 2) / blocks))"
+}
+
+provider_disk_io() {
+  VAL_DISK_READ="null"
+  VAL_DISK_WRITE="null"
+  if [[ ! -r "$DISKSTATS_PATH" ]]; then
+    return 0
+  fi
+  local total_read=0 total_write=0
+  local line name f4 f5 f6 f7 f8 f9 f10
+  while IFS= read -r line; do
+    line="$(trim "$line")"
+    [[ -n "$line" ]] || continue
+    read -r _ _ name f4 f5 f6 f7 f8 f9 f10 _ <<< "$line"
+    is_whole_disk "$name" || continue
+    is_uint "$f6" || continue
+    is_uint "$f10" || continue
+    total_read=$((total_read + f6))
+    total_write=$((total_write + f10))
+  done < "$DISKSTATS_PATH"
+  local now_ns=""
+  now_ns="$(date +%s%N 2>/dev/null || true)"
+  now_ns="$(trim "$now_ns")"
+  if [[ ! "$now_ns" =~ ^[0-9]+$ ]]; then
+    local now_s
+    now_s="$(date +%s 2>/dev/null || true)"
+    if is_uint "$now_s"; then
+      now_ns="$((now_s * 1000000000))"
+    else
+      return 0
+    fi
+  fi
+  local cur_read=$((total_read * 512))
+  local cur_write=$((total_write * 512))
+  if [[ -z "$DISK_PREV_READ" || -z "$DISK_PREV_WRITE" || -z "$DISK_PREV_TIME_NS" ]]; then
+    DISK_PREV_READ="$cur_read"
+    DISK_PREV_WRITE="$cur_write"
+    DISK_PREV_TIME_NS="$now_ns"
+    return 0
+  fi
+  local d_read=$((cur_read - DISK_PREV_READ))
+  local d_write=$((cur_write - DISK_PREV_WRITE))
+  local d_time=$((now_ns - DISK_PREV_TIME_NS))
+  DISK_PREV_READ="$cur_read"
+  DISK_PREV_WRITE="$cur_write"
+  DISK_PREV_TIME_NS="$now_ns"
+  if [[ "$d_time" -le 0 || "$d_read" -lt 0 || "$d_write" -lt 0 ]]; then
+    return 0
+  fi
+  VAL_DISK_READ="$(awk -v db="$d_read" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
+  VAL_DISK_WRITE="$(awk -v db="$d_write" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
+}
+
+assemble_disk() {
+  if [[ "$VAL_DISK_USED_PCT" == "null" && "$VAL_DISK_READ" == "null" && "$VAL_DISK_WRITE" == "null" ]]; then
+    DISK_JSON="null"
+  else
+    DISK_JSON="{\"mount\":$(json_quote "$ROOT_MOUNT"),\"used_pct\":$VAL_DISK_USED_PCT,\"read_bps\":$VAL_DISK_READ,\"write_bps\":$VAL_DISK_WRITE}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # gpu_detail assembly (null unless some subfield answered)
 # ---------------------------------------------------------------------------
 assemble_gpu_detail() {
@@ -838,13 +1059,18 @@ emit_reading() {
   provider_gpu
   provider_clocks
   provider_load
+  provider_net
+  provider_disk_usage
+  provider_disk_io
   assemble_gpu_detail
+  assemble_net
+  assemble_disk
   # cpu_model / cores already cached by provider_cpu_info_once
-  printf '{"schema":1,"cpu":%s,"temp":%s,"mem":%s,"gpu":%s,"gpu_temp":%s,"fans":%s,"cpu_mhz":%s,"gpu_mhz":%s,"mem_used_kib":%s,"mem_total_kib":%s,"swap_used_kib":%s,"swap_total_kib":%s,"cpu_model":%s,"cpu_cores":%s,"load":%s,"gpu_detail":%s}\n' \
+  printf '{"schema":2,"cpu":%s,"temp":%s,"mem":%s,"gpu":%s,"gpu_temp":%s,"fans":%s,"cpu_mhz":%s,"gpu_mhz":%s,"mem_used_kib":%s,"mem_total_kib":%s,"swap_used_kib":%s,"swap_total_kib":%s,"cpu_model":%s,"cpu_cores":%s,"load":%s,"gpu_detail":%s,"net":%s,"disk":%s}\n' \
     "$VAL_CPU" "$VAL_TEMP" "$VAL_MEM" "$VAL_GPU" "$VAL_GPU_TEMP" "$FANS_JSON" \
     "$VAL_CPU_MHZ" "$VAL_GPU_MHZ" "$VAL_MEM_USED" "$VAL_MEM_TOTAL" \
     "$VAL_SWAP_USED" "$VAL_SWAP_TOTAL" "$VAL_CPU_MODEL_JSON" "$VAL_CPU_CORES" \
-    "$LOAD_JSON" "$GPU_DETAIL_JSON"
+    "$LOAD_JSON" "$GPU_DETAIL_JSON" "$NET_JSON" "$DISK_JSON"
 }
 
 usage() {
@@ -890,11 +1116,13 @@ main() {
   provider_cpu_info_once
 
   if [[ "$mode" == "once" ]]; then
-    # Prime percentage functions, wait ~0.2 s, then report real deltas.
+    # Prime percentage/rate functions, wait ~0.2 s, then report real deltas.
     provider_cpu_usage
     if [[ "$GPU_SOURCE" == "intel" ]]; then
       provider_gpu_intel
     fi
+    provider_net
+    provider_disk_io
     sleep 0.2
     emit_reading
   else

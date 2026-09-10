@@ -4,7 +4,7 @@
 //
 //   quickshell -p dev.qml
 //   MODULAR_HW_MONITOR_HIDDEN='mem_usage' MODULAR_HW_MONITOR_MODE=combo \
-//     MODULAR_HW_MONITOR_GRAPHITE=1 MODULAR_HW_MONITOR_FAKE_GPU=1 \
+//     MODULAR_HW_MONITOR_COLOR=0 MODULAR_HW_MONITOR_FAKE_GPU=1 \
 //     MODULAR_HW_MONITOR_FAKE_LOAD=1 quickshell -p dev.qml
 import QtQuick
 import QtQuick.Layouts
@@ -25,29 +25,37 @@ ShellRoot {
   }
 
   // The installed widget reads prefs from disk; the harness takes
-  // them from the environment so any state photographs cold.
-  property var prefs: Prefs.adoptPrefs({
-    hidden: (Quickshell.env("MODULAR_HW_MONITOR_HIDDEN") || "").split(","),
-    mode: Quickshell.env("MODULAR_HW_MONITOR_MODE") || "digits",
-    showDigits: Quickshell.env("MODULAR_HW_MONITOR_DIGITS") !== "0",
-    wordLabels: shell.envFlag("MODULAR_HW_MONITOR_WORDS"),
-    colorMode: shell.envFlag("MODULAR_HW_MONITOR_GRAPHITE") ? "graphite" : "auto",
-    showClocks: shell.envFlag("MODULAR_HW_MONITOR_CLOCKS"),
-    ramFormat: Quickshell.env("MODULAR_HW_MONITOR_RAM") === "used" ? "used" : "percent"
-  })
+  // them from the environment so any state photographs cold. The seed
+  // below is deliberately v1-shaped (hidden/mode/ramFormat) so it goes
+  // through the same upgrade path a real old prefs file would;
+  // colorIntensity and the per-group word/temp-color choices are v2-only
+  // fields with nothing to migrate from, so they're overlaid on the
+  // already-adopted result instead. The harness only exposes these for
+  // the cpu group — enough to preview the feature, not a full per-group
+  // control surface (that's what the real menu is for).
+  property var prefs: {
+    var base = Prefs.adoptPrefs({
+      hidden: (Quickshell.env("MODULAR_HW_MONITOR_HIDDEN") || "").split(","),
+      mode: Quickshell.env("MODULAR_HW_MONITOR_MODE") || "digits",
+      showDigits: Quickshell.env("MODULAR_HW_MONITOR_DIGITS") !== "0",
+      showClocks: shell.envFlag("MODULAR_HW_MONITOR_CLOCKS"),
+      ramFormat: Quickshell.env("MODULAR_HW_MONITOR_RAM") === "used" ? "used" : "percent"
+    })
+    var envColor = Quickshell.env("MODULAR_HW_MONITOR_COLOR")
+    base.colorIntensity = envColor !== "" ? Math.max(0, Math.min(100, Number(envColor))) : 100
+    base.groups.cpu.wordLabel = shell.envFlag("MODULAR_HW_MONITOR_WORDS")
+    base.groups.cpu.tempColor = shell.envFlag("MODULAR_HW_MONITOR_TEMP_SECONDARY") ? "secondary" : "primary"
+    return base
+  }
 
   function commit(next) { shell.prefs = Prefs.adoptPrefs(next) }
 
-  function toggleHidden(key) {
+  // The harness has no per-group cards like the real menu: clicking a
+  // preview row just flips that metric's whole group on/off, which is
+  // enough to photograph a group being hidden.
+  function toggleGroupEnabled(id) {
     var p = Prefs.adoptPrefs(shell.prefs)
-    var out = []
-    var found = false
-    for (var i = 0; i < p.hidden.length; i++) {
-      if (p.hidden[i] === key) found = true
-      else out.push(p.hidden[i])
-    }
-    if (!found) out.push(key)
-    p.hidden = out
+    if (p.groups[id]) p.groups[id].enabled = p.groups[id].enabled !== true
     shell.commit(p)
   }
 
@@ -90,23 +98,39 @@ ShellRoot {
     }
   }
 
-  readonly property var allMetrics: Metrics.metrics(shell.effectiveReading,
-    ({ unit: shell.prefs.unit, showRpm: shell.prefs.showRpm,
-       showClocks: shell.prefs.showClocks, ramFormat: shell.prefs.ramFormat,
-       showDigits: shell.prefs.showDigits, wordLabels: shell.prefs.wordLabels,
-       mode: shell.prefs.mode }), shell.prefs)
-  readonly property var orderedMetrics: Metrics.orderKeys(shell.allMetrics, shell.prefs.order)
-  readonly property var stripModel: Modes.stripCells(shell.orderedMetrics,
-    shell.prefs.hidden, Modes.normalizeMode(shell.prefs.mode),
-    ({ showDigits: shell.prefs.showDigits, wordLabels: shell.prefs.wordLabels }))
+  function groupMode(id) {
+    var g = shell.prefs.groups[id]
+    var m = (g && g.mode) || "inherit"
+    return m === "inherit" ? Modes.normalizeMode(shell.prefs.defaultMode) : Modes.normalizeMode(m)
+  }
+
+  readonly property var groupModes: ({ cpu: shell.groupMode("cpu"), gpu: shell.groupMode("gpu") })
+  readonly property var allMetrics: Metrics.metrics(shell.effectiveReading, shell.groupModes, shell.prefs)
+  readonly property var orderedMetrics: Metrics.orderKeys(shell.allMetrics,
+    Metrics.metricsExpandGroupOrder(shell.prefs.order, shell.prefs.groups.fan.order))
+  readonly property var effectiveHidden: Metrics.metricsEffectiveHidden(shell.orderedMetrics, shell.prefs)
+  readonly property var visibleMetrics: Metrics.shown(shell.orderedMetrics, shell.effectiveHidden)
+  function groupModeOpts(id) {
+    var g = shell.prefs.groups[id]
+    return { showDigits: shell.prefs.showDigits, wordLabels: !!(g && g.wordLabel) }
+  }
+  readonly property var stripModel: {
+    var runs = Metrics.metricsGroupRuns(shell.visibleMetrics)
+    var out = []
+    for (var i = 0; i < runs.length; i++) {
+      var run = runs[i]
+      out = out.concat(Modes.buildStripCells(run.items, shell.groupMode(run.device), shell.groupModeOpts(run.device)))
+    }
+    return out
+  }
 
   // Same coloring contract as the widget: foreground warms toward red
-  // past the thresholds, graphite stays flat gray.
-  function grayOf() { return "#9aa0b4" }
+  // past the thresholds, scaled by colorIntensity (0 never warms).
+  readonly property color secondaryColor: "#565f89"
   function warm(amount) {
-    if (shell.prefs.colorMode === "graphite") return shell.grayOf()
-    if (!(amount > 0)) return "#c0caf5"
-    var t = Math.min(1, amount)
+    var scaled = (amount || 0) * (shell.prefs.colorIntensity / 100)
+    if (!(scaled > 0)) return "#c0caf5"
+    var t = Math.min(1, scaled)
     function mix(a, b) { return Math.round(a + (b - a) * t) }
     return Qt.rgba(mix(192, 247) / 255, mix(202, 118) / 255, mix(245, 142) / 255, 1)
   }
@@ -162,12 +186,23 @@ ShellRoot {
               required property var modelData
               readonly property bool isJoined: modelData.cell === "joined"
               readonly property var cellMetric: isJoined ? modelData.usage : modelData.metric
-              readonly property bool isGauge: modelData.cell === "gauge" || isJoined
+              readonly property bool isGauge: modelData.cell === "gauge"
+                || (isJoined && modelData.gaugeFirst === true)
               readonly property real cellSeverity: {
                 if (isJoined)
                   return Math.max(modelData.usage.severity || 0, modelData.temp.severity || 0)
                 return (cellMetric && cellMetric.severity) || 0
               }
+              readonly property string cellDevice: isJoined ? modelData.usage.device : (cellMetric ? cellMetric.device : "")
+              readonly property bool isTempCell: !isJoined && (cellDevice === "cpu" || cellDevice === "gpu")
+                && cellMetric && cellMetric.kind === "temp"
+              readonly property bool tempIsSecondary: {
+                var g = shell.prefs.groups[cellDevice]
+                return !!(g && g.tempColor === "secondary")
+              }
+              readonly property string wordLabelText: cellDevice === "fan"
+                ? (cellMetric ? cellMetric.label : "")
+                : (Metrics.GROUP_LABELS[cellDevice] || (cellMetric ? cellMetric.label : ""))
 
               glyph: cellMetric ? cellMetric.glyph : ""
               showGlyph: modelData.bare !== true
@@ -176,10 +211,23 @@ ShellRoot {
               value: {
                 if (!cellMetric) return ""
                 if (modelData.cell === "gauge" && !modelData.withDigits) return ""
-                if (isJoined) return modelData.temp.bar
-                if (modelData.bare === true) return cellMetric.label + " " + cellMetric.bar
+                if (isJoined) {
+                  if (modelData.bare === true) return wordLabelText + " " + modelData.usage.bar
+                  return isGauge ? "" : modelData.usage.bar
+                }
+                if (modelData.bare === true) return wordLabelText + " " + cellMetric.bar
                 return cellMetric.bar
               }
+              trailValue: isJoined ? modelData.temp.bar : ""
+              trailSecondary: isJoined && tempIsSecondary
+              trailGap: iconGap
+              padLen: {
+                if (isTempCell && tempIsSecondary) return value.length
+                if (modelData.bare === true) return 0
+                if (isJoined) return (!isGauge && modelData.usage.padLen) || 0
+                return (cellMetric && cellMetric.padLen) || 0
+              }
+              secondaryColor: shell.secondaryColor
               dimmed: cellMetric ? cellMetric.dim === true : true
               fontFamily: shell.devFont
               fontSize: 20
@@ -190,7 +238,7 @@ ShellRoot {
               // The harness has no menu: every button cycles the mode.
               onPressed: function(button) {
                 var p = Prefs.adoptPrefs(shell.prefs)
-                p.mode = Modes.nextMode(p.mode)
+                p.defaultMode = Modes.nextMode(p.defaultMode)
                 shell.commit(p)
               }
             }
@@ -209,7 +257,7 @@ ShellRoot {
           delegate: Rectangle {
             id: menuRow
             required property var modelData
-            readonly property bool off: Metrics.isHidden(modelData.key, shell.prefs.hidden)
+            readonly property bool off: Metrics.isHidden(modelData.key, shell.effectiveHidden)
 
             width: 420
             height: 30
@@ -254,7 +302,7 @@ ShellRoot {
               id: rowMouse
               anchors.fill: parent
               hoverEnabled: true
-              onClicked: shell.toggleHidden(menuRow.modelData.key)
+              onClicked: shell.toggleGroupEnabled(menuRow.modelData.device)
             }
           }
         }
@@ -273,7 +321,7 @@ ShellRoot {
 
               delegate: Text {
                 required property var modelData
-                readonly property bool active: shell.prefs.mode === modelData
+                readonly property bool active: shell.prefs.defaultMode === modelData
                 text: Modes.MODE_LABELS[modelData]
                 color: active ? "#7aa2f7" : "#c0caf5"
                 opacity: active ? 1.0 : 0.55
@@ -287,7 +335,7 @@ ShellRoot {
                   cursorShape: Qt.PointingHandCursor
                   onClicked: {
                     var p = Prefs.adoptPrefs(shell.prefs)
-                    p.mode = modelData
+                    p.defaultMode = modelData
                     shell.commit(p)
                   }
                 }
@@ -327,28 +375,54 @@ ShellRoot {
             }
 
             Text {
-              text: shell.prefs.wordLabels ? "Words" : "words"
-              color: shell.prefs.wordLabels ? "#7aa2f7" : "#c0caf5"
+              text: shell.prefs.groups.cpu.wordLabel ? "CPU: Word" : "cpu: word"
+              color: shell.prefs.groups.cpu.wordLabel ? "#7aa2f7" : "#c0caf5"
               font.family: shell.devFont
               font.pixelSize: 12
               MouseArea {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: shell.setFlag("wordLabels", !shell.prefs.wordLabels)
+                onClicked: {
+                  var p = Prefs.adoptPrefs(shell.prefs)
+                  p.groups.cpu.wordLabel = !p.groups.cpu.wordLabel
+                  shell.commit(p)
+                }
               }
             }
 
             Text {
-              text: shell.prefs.colorMode === "graphite" ? "Graphite" : "graphite"
-              color: shell.prefs.colorMode === "graphite" ? "#7aa2f7" : "#c0caf5"
+              text: "color " + shell.prefs.colorIntensity + "%"
+              color: "#c0caf5"
               font.family: shell.devFont
               font.pixelSize: 12
               MouseArea {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: shell.setFlag("colorMode", shell.prefs.colorMode === "graphite" ? "auto" : "graphite")
+                // Cycle 100 -> 0 -> 50 -> 100, enough to preview the range.
+                onClicked: {
+                  var cur = shell.prefs.colorIntensity
+                  var next = cur >= 100 ? 0 : (cur === 0 ? 50 : 100)
+                  shell.setFlag("colorIntensity", next)
+                }
+              }
+            }
+
+            Text {
+              text: shell.prefs.groups.cpu.tempColor === "secondary" ? "CPU: Temp 2nd" : "cpu: temp 2nd"
+              color: shell.prefs.groups.cpu.tempColor === "secondary" ? "#7aa2f7" : "#c0caf5"
+              font.family: shell.devFont
+              font.pixelSize: 12
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var p = Prefs.adoptPrefs(shell.prefs)
+                  p.groups.cpu.tempColor = p.groups.cpu.tempColor === "secondary" ? "primary" : "secondary"
+                  shell.commit(p)
+                }
               }
             }
           }

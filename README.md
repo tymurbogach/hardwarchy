@@ -60,31 +60,48 @@ apart.
 - **Right-click a metric** — cycle the display mode; middle-click opens
   the menu too
 
-### Display modes
+### Monitors and display modes
 
-Three modes, cycled with right-click or picked in the menu:
+Six independent monitor groups — CPU, GPU, Memory, Network, Disk, Fans —
+each with its own card in the menu: a master switch, and (when
+expanded) its own options. Network and Disk start off by default; the
+rest start on.
 
-| Mode | Bar shows |
+Two modes, cycled with right-click or picked per card (or left on
+`Auto`, which follows the menu's default mode):
+
+| Mode | Usage shows as |
 |---|---|
-| `Digits` | glyph + digits per metric (the default) |
-| `Gauges` | glyph + vertical gauge for usage; digits for temps and fans |
-| `Combo` | usage and temp of one device joined: glyph + gauge + temp |
+| `Number` | a percentage (the default) |
+| `Bar` | a vertical gauge |
 
-Options combine with any mode:
+A device's usage and its second reading always draw fused into one
+cell, glyph first — CPU/GPU usage+temp, Network down+up, Disk
+usage+activity — with no label between them (`23%44°`, never
+`CPU temp`). Each card also has its own:
 
-- **Digits** — gauges also carry their digits
-- **Words** — digit read-outs use words instead of glyphs (`CPU usage 12%`; gauges keep their glyph)
-- **Graphite** — flat gray chrome, no alert warming
-- **Clocks** — usage read-outs carry their clock (`12% 3.2G`)
-- **GiB** — memory as used over total (`9.4/62G`) instead of a percentage
+- **Icon / Word** — glyph, or the metric's name as text (`CPU usage 12%`)
+  — RAM defaults to Word, since no single glyph reads as "RAM" at a
+  glance; a word-labelled card always shows as text, even in Bar mode
+- **Temp: warm / quiet** (CPU and GPU only) — let the temperature warm
+  with severity like usage does, or always render it in the theme's
+  quiet secondary color
+- CPU/GPU also keep **Clocks**; Memory keeps **% / GiB**; Disk keeps
+  **Usage / Activity**
 
-In `Auto` color a hot machine warms toward the theme's urgent color as
-load climbs past its warn threshold (fully urgent at crit) — in the bar
-and in the menu values alike. The defaults are 70/90 % for usage and
-75/90 °C for temps; the menu's Units & alerts section adjusts them.
+A hot reading warms toward the theme's urgent color as it climbs past
+its warn threshold (fully urgent at crit) — in the bar and in the menu
+alike. **Color %** in the menu dials how strongly that warming applies,
+from 0 (never warms — flat theme foreground) to 100 (full warming, the
+default). The defaults are 70/90 % for usage and 75/90 °C for temps;
+the menu's Units & alerts section adjusts them. A usage percentage
+under 10% always draws its leading zero in a quiet secondary color
+(e.g. `03%`), reserving the width so the reading doesn't shift when it
+crosses back into two digits — temperature has no such padding, since
+its own color choice is a whole-value pick instead.
 
-A vertical bar always draws digits. The exact figure behind any gauge
-lives in the tooltip and the menu.
+A vertical bar always draws numbers. The exact figures behind any bar
+or fused cell live in the tooltip and the menu.
 
 Two more prefs sit in the menu's Units row:
 
