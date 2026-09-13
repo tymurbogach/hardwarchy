@@ -93,10 +93,21 @@ cat > "$FAKE_DISKSTATS" <<'DISKEOF'
  253       0 dm-0 20 0 800 2 10 0 900 3 0 0 0 0 0 0 0
 DISKEOF
 
+# --- fake /proc/mounts: real filesystems only, one mount per device -------
+FAKE_MOUNTS="$FAKE_ROOT.mounts"
+cat > "$FAKE_MOUNTS" <<'MOUNTEOF'
+proc /proc proc rw 0 0
+/dev/mapper/root / btrfs rw 0 0
+tmpfs /tmp tmpfs rw 0 0
+/dev/mapper/root /home btrfs rw 0 0
+/dev/nvme0n1p1 /boot vfat rw 0 0
+/dev/sdb1 /mnt/my\040disk ext4 rw 0 0
+MOUNTEOF
+
 # --- run one-shot against the fake tree -----------------------------------
 if ! MONITOR_HWMON_ROOT="$FAKE_ROOT" MONITOR_DRM_ROOT="$FAKE_DRM" \
     MONITOR_NET_DEV_FILE="$FAKE_NET_DEV" MONITOR_DISKSTATS_PATH="$FAKE_DISKSTATS" \
-    MONITOR_ROOT_MOUNT="$FAKE_ROOT" \
+    MONITOR_ROOT_MOUNT="$FAKE_ROOT" MONITOR_MOUNTS_FILE="$FAKE_MOUNTS" \
     "$SYSREAD" > "$OUT_MAIN" 2>"$FAKE_ROOT.stderr"; then
   cat "$FAKE_ROOT.stderr" >&2
   fail "sysread one-shot exited non-zero against fake tree"
@@ -177,6 +188,16 @@ if ok_disk:
           isinstance(used_pct, int) and 0 <= used_pct <= 100, f"got {used_pct!r}")
     check("disk I/O only counts the whole disk (sda), not sda1/loop0/dm-0",
           disk.get("read_bps") == 0 and disk.get("write_bps") == 0, f"got {disk!r}")
+    used_b, total_b = disk.get("used_b"), disk.get("total_b")
+    check("disk reports used and total bytes", isinstance(used_b, int) and isinstance(total_b, int) and 0 <= used_b <= total_b,
+          f"got used_b={used_b!r} total_b={total_b!r}")
+    check("disk lists real mounts, one per device, spaces decoded",
+          disk.get("mounts") == ["/", "/boot", "/mnt/my disk"], f"got {disk.get('mounts')!r}")
+
+check("gpu_source is the one that answered", doc.get("gpu_source") == "amd", f"got {doc.get('gpu_source')!r}")
+check("gpu_sources lists every answering source", doc.get("gpu_sources") == ["amd"], f"got {doc.get('gpu_sources')!r}")
+if ok_net:
+    check("net lists the real interfaces only", net.get("ifaces") == ["eth0"], f"got {net.get('ifaces')!r}")
 
 sys.exit(1 if failures else 0)
 PYEOF
@@ -229,5 +250,62 @@ PYEOF
 if ! python3 "$PY_ASSERT_EMPTY" "$OUT_EMPTY"; then
   fail "empty-tree assertions failed (see FAIL lines above)"
 fi
+
+# --- choices from the widget: interface, GPU source, mount ---------------
+FAKE_NET_DEV2="$FAKE_ROOT.net-dev2"
+cat > "$FAKE_NET_DEV2" <<'NETEOF'
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:    1000      10    0    0    0     0          0         0     1000      10    0    0    0     0       0          0
+   eth0:  900000     900    0    0    0     0          0         0   100000     100    0    0    0     0       0          0
+  wlan0:    5000      50    0    0    0     0          0         0     5000      50    0    0    0     0       0          0
+NETEOF
+FAKE_DRM2="$FAKE_DRM/with-intel"
+mkdir -p "$FAKE_DRM2/card0/engine/rcs0"
+printf '1000\n' > "$FAKE_DRM2/card0/engine/rcs0/busy_time"
+
+run_choice() {
+  MONITOR_HWMON_ROOT="$FAKE_ROOT" MONITOR_DRM_ROOT="$FAKE_DRM2" \
+    MONITOR_NET_DEV_FILE="$FAKE_NET_DEV2" MONITOR_DISKSTATS_PATH="$FAKE_DISKSTATS" \
+    MONITOR_MOUNTS_FILE="$FAKE_MOUNTS" "$@" "$SYSREAD"
+}
+
+PY_FIELD="$FAKE_ROOT/field.py"
+cat > "$PY_FIELD" <<'PYEOF'
+import json, sys
+doc = json.loads(sys.stdin.read())
+for path in sys.argv[1:]:
+    v = doc
+    for k in path.split("."):
+        v = v.get(k) if isinstance(v, dict) else None
+    print(json.dumps(v))
+PYEOF
+
+chosen="$(run_choice env MONITOR_NET_IFACE=wlan0 MONITOR_GPU=intel MONITOR_ROOT_MOUNT=/no/such/mount \
+  | python3 "$PY_FIELD" net.iface net.ifaces gpu_source gpu_sources disk.mount | tr '\n' ' ')"
+[[ "$chosen" == '"wlan0" ["eth0", "wlan0"] "intel" ["amd", "intel"] "/" ' ]] \
+  || fail "widget choices: expected wlan0/intel and a / fallback, got: $chosen"
+pass "the collector reads the interface, GPU and mount the widget chose (a gone mount falls back to /)"
+
+fallback="$(run_choice env MONITOR_NET_IFACE=nope MONITOR_GPU=nvidia \
+  | python3 "$PY_FIELD" net.iface gpu_source | tr '\n' ' ')"
+[[ "$fallback" == '"eth0" "amd" ' ]] \
+  || fail "unknown choices: expected the automatic eth0/amd picks, got: $fallback"
+pass "an interface or GPU the machine lacks falls back to the automatic pick"
+
+# --- only what the widget asks for --------------------------------------
+only="$(run_choice env MONITOR_READ=temp,fans \
+  | python3 "$PY_FIELD" cpu mem load gpu net disk | tr '\n' ' ')"
+[[ "$only" == 'null null null null null null ' ]] \
+  || fail "MONITOR_READ=temp,fans: expected every other reading null, got: $only"
+asked="$(run_choice env MONITOR_READ=temp,fans | python3 "$PY_FIELD" temp fans | tr '\n' ' ')"
+[[ "$asked" != null* && "$asked" != *' [] ' ]] \
+  || fail "MONITOR_READ=temp,fans: expected a temp and the fans, got: $asked"
+pass "MONITOR_READ reads the providers it names and nothing else"
+
+none="$(run_choice env MONITOR_READ=none | python3 "$PY_FIELD" temp fans gpu disk gpu_source | tr '\n' ' ')"
+[[ "$none" == 'null [] null null "amd" ' ]] \
+  || fail "MONITOR_READ=none: expected no reading but the startup GPU pick, got: $none"
+pass "MONITOR_READ=none reads nothing"
 
 echo "ALL COLLECTOR TESTS PASSED"

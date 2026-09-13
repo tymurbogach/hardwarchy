@@ -1,318 +1,379 @@
-// Display modes for the modular HW monitor.
+// Bar cells for the modular HW monitor.
 // Plain script: top-level var and function only, no imports or exports.
-// Standalone: does not call into Metrics.js, it reimplements the small
-// bits it needs under modes-prefixed names.
+// Standalone: does not call into Metrics.js. Metrics arrive already
+// built and filtered, prefs already adopted; this file decides how each
+// group's cell draws, one part at a time.
 
 function modesIsArray(v) {
   return Object.prototype.toString.call(v) === "[object Array]";
 }
 
-// Two states, not three: "Number" or "Bar" for how a usage-like value
-// draws. Whether two halves of a device (cpu usage+temp, net down+up,
-// disk usage+io) join into one cell no longer depends on this at all —
-// see PAIR_KINDS and buildStripCells below — so there is no third
-// "joined" mode to pick; a group either shows the pair joined (always,
-// when both halves are visible) with the first half as a number or a
-// bar, exactly the two axes a user actually wants control over.
-var MODES = ["digits", "gauges"];
+function modesIsObject(v) {
+  return v !== null && typeof v === "object" && !modesIsArray(v);
+}
 
-var MODE_LABELS = {
-  digits: "Number",
-  gauges: "Bar"
+// The groups whose cell has a load a right-click can cycle, the part that
+// holds it, and that part's number toggle.
+var LOAD_PARTS = {
+  cpu: { part: "load", number: "number" },
+  gpu: { part: "load", number: "number" },
+  mem: { part: "used", number: "percent" },
+  disk: { part: "used", number: "percent" }
 };
 
-// Which two metric kinds combo-mode joins into one cell, per device, and
-// the metric-key suffixes that carry them (device + "_" + kind). The
-// first kind takes the gauge/intensity slot, the second the digit/detail
-// slot — same roles as usage+temp today, generalized to net's down+up and
-// disk's usage+io. Whether the first slot actually draws a gauge still
-// depends on that metric carrying a numeric `.ratio` (see modesIsUsage) —
-// net's "down" has none, so a joined net cell never fakes a progress bar.
-var PAIR_KINDS = {
-  cpu: { first: "usage", second: "temp" },
-  gpu: { first: "usage", second: "temp" },
-  net: { first: "down", second: "up" },
-  disk: { first: "usage", second: "io" }
-};
+var LOAD_GROUPS = ["cpu", "gpu", "mem", "disk"];
 
-function modesPairKindsFor(dev) {
-  if (Object.prototype.hasOwnProperty.call(PAIR_KINDS, dev)) {
-    return PAIR_KINDS[dev];
-  }
-  return null;
-}
-
-function modesKindOf(m) {
-  if (m && typeof m.kind === "string") {
-    return m.kind;
-  }
-  return "";
-}
-
-function normalizeMode(m) {
-  if (m === "digits" || m === "gauges") {
-    return m;
-  }
-  return "digits";
-}
-
-function nextMode(m) {
-  var cur = normalizeMode(m);
-  if (cur === "digits") {
-    return "gauges";
-  }
-  return "digits";
-}
-
-function modesIsUsage(m) {
-  if (m === null || m === undefined || typeof m !== "object") {
-    return false;
-  }
-  if (m.kind === "usage") {
-    return true;
-  }
-  if (typeof m.key === "string" && m.key.indexOf("usage") >= 0) {
-    return true;
-  }
-  return false;
-}
-
-function modesDevice(m) {
-  if (m && typeof m.device === "string" && m.device !== "") {
-    return m.device;
-  }
-  if (m && typeof m.key === "string") {
-    if (m.key.indexOf("cpu_") === 0) {
-      return "cpu";
-    }
-    if (m.key.indexOf("gpu_") === 0) {
-      return "gpu";
-    }
-    if (m.key.indexOf("mem") === 0) {
-      return "mem";
-    }
-    if (m.key.indexOf("fan:") === 0) {
-      return "fan";
+// The next load a right-click shows: the number, then the bar, then both.
+// Only those two toggles move; GiB and the color stay as they are.
+function nextLoad(part, numberKey) {
+  var src = modesIsObject(part) ? part : {};
+  var out = {};
+  var k = "";
+  for (k in src) {
+    if (Object.prototype.hasOwnProperty.call(src, k)) {
+      out[k] = src[k];
     }
   }
-  return "";
-}
-
-function modesMetricKey(m) {
-  if (m && typeof m.key === "string") {
-    return m.key;
+  var number = src[numberKey] === true;
+  var bar = src.bar === true;
+  if (number && !bar) {
+    out[numberKey] = false;
+    out.bar = true;
+  } else if (!number && bar) {
+    out[numberKey] = true;
+    out.bar = true;
+  } else {
+    out[numberKey] = true;
+    out.bar = false;
   }
-  return "";
+  return out;
 }
 
-function modesShowDigits(opts) {
-  if (opts && typeof opts === "object" && !modesIsArray((opts))) {
-    if (opts.showDigits === false) {
-      return false;
-    }
-    if (opts.showDigits === true) {
-      return true;
-    }
+// The group patch a right-click applies, or null for a group with no load.
+function cycleLoadPatch(prefs, id) {
+  var spec = LOAD_PARTS[id];
+  if (!spec) {
+    return null;
   }
-  return true;
+  var patch = {};
+  patch[spec.part] = nextLoad(modesGroup(prefs, id)[spec.part], spec.number);
+  return patch;
 }
 
-function modesWordLabels(opts) {
-  if (opts && typeof opts === "object" && !modesIsArray((opts))) {
-    return opts.wordLabels === true;
+function modesText(v) {
+  return typeof v === "string" ? v : "";
+}
+
+function modesGroup(prefs, id) {
+  if (modesIsObject(prefs) && modesIsObject(prefs.groups) && modesIsObject(prefs.groups[id])) {
+    return prefs.groups[id];
   }
-  return false;
+  return {};
 }
 
-function modesMakeMetricCell(m, words) {
+function modesOn(part, key) {
+  return modesIsObject(part) && part[key] === true;
+}
+
+function modesQuiet(part) {
+  return modesIsObject(part) && part.quiet === true;
+}
+
+// ---- pieces ----------------------------------------------------------
+// A cell is a row of pieces. A piece is what MetricButton draws:
+//   kind "mark"   a glyph, a word or a tag, placed by its ink
+//   kind "gauge"  a vertical gauge, `ratio` 0..1
+//   kind "text"   a reading; `pad` leading chars draw muted unless
+//                 `padQuiet` is false
+// `gap` is the space before it: "none" (first), "tight" (the iconGap,
+// inside one part) or "part" (the partGap, between two parts). A mark
+// hugs what it labels; every other part boundary takes the part gap.
+// A quiet piece is always muted and never warms.
+
+function modesPiece(kind, text, ratio, pad, quiet, severity) {
   return {
-    cell: "metric",
-    key: modesMetricKey(m),
-    metric: m,
-    bare: words === true
+    kind: kind,
+    text: text,
+    ratio: ratio,
+    pad: pad,
+    padQuiet: true,
+    quiet: quiet === true,
+    severity: quiet === true ? 0 : severity,
+    gap: "none"
   };
 }
 
-function modesMakeGaugeCell(m, withDigits) {
-  return {
-    cell: "gauge",
-    key: modesMetricKey(m),
-    metric: m,
-    withDigits: withDigits === true
-  };
+function modesMark(text, quiet, severity) {
+  var mark = modesPiece("mark", text, -1, 0, quiet, severity);
+  mark.isMark = true;
+  return mark;
 }
 
-// Build strip cells from an already visible and ordered metric list.
-// digits: one metric cell per item.
-// gauges: usage items become gauge cells, the rest stay metric cells.
-// combo: per-device usage plus temp join, lone halves use gauge rules.
-// Build strip cells from an already visible and ordered metric list.
-// Pairing is unconditional: whenever a device's PAIR_KINDS halves are
-// both visible, they always join into one cell — that's the only way
-// "usage + temp" (or down + up, usage + io) ever reads as one thing
-// instead of two separately-labelled values. `mode` only decides
-// whether the gaugeable half (kind "usage") draws as a number or a bar,
-// for both joined and standalone cells alike.
-function buildStripCells(visible, mode, opts) {
-  var list = [];
-  if (modesIsArray(visible)) {
-    list = visible;
+// Append one part (a list of pieces) to a cell's pieces, setting gaps.
+function modesAddPart(pieces, part) {
+  if (part.length === 0) {
+    return;
   }
-  var norm = normalizeMode(mode);
-  var useGauge = norm === "gauges";
-  var showDigits = modesShowDigits(opts);
-  var words = modesWordLabels(opts);
-  var out = [];
+  var prev = pieces.length > 0 ? pieces[pieces.length - 1] : null;
   var i = 0;
+  for (i = 0; i < part.length; i++) {
+    if (i > 0) {
+      part[i].gap = "tight";
+    } else if (prev === null) {
+      part[i].gap = "none";
+    } else {
+      part[i].gap = prev.isMark === true && prev.isWord !== true ? "tight" : "part";
+    }
+    pieces.push(part[i]);
+  }
+}
 
-  var byKey = {};
-  for (i = 0; i < list.length; i++) {
-    var item = list[i];
-    if (item && typeof item.key === "string") {
-      byKey[item.key] = item;
+// Usage digits, with the pad digit shown muted, shown plain, or dropped.
+function modesDigits(m, zero, quiet, severity) {
+  var bar = modesText(m.bar);
+  var pad = m.padLen || 0;
+  if (pad > 0 && modesIsObject(zero) && zero.show === false) {
+    return modesPiece("text", bar.substring(pad), -1, 0, quiet, severity);
+  }
+  var piece = modesPiece("text", bar, -1, pad, quiet, severity);
+  piece.padQuiet = !modesIsObject(zero) || zero.quiet !== false;
+  return piece;
+}
+
+function modesGaugeable(m, vertical) {
+  return typeof m.ratio === "number" && isFinite(m.ratio) && vertical !== true;
+}
+
+// ---- parts, each a list of parts (a list of piece lists) --------------
+
+// A CPU/GPU load: the bar and the number. A bar with no room (a vertical
+// bar) or no ratio falls back to the number.
+function modesLoadParts(m, part, zero, vertical) {
+  if (!m) {
+    return [];
+  }
+  var quiet = modesQuiet(part);
+  var sev = m.severity || 0;
+  var gauge = modesOn(part, "bar") && modesGaugeable(m, vertical);
+  var main = [];
+  if (gauge) {
+    main.push(modesPiece("gauge", "", Math.max(0, Math.min(1, m.ratio)), 0, quiet, sev));
+  }
+  if (modesOn(part, "number") || (modesOn(part, "bar") && !gauge)) {
+    main.push(modesDigits(m, zero, quiet, sev));
+  }
+  return [main];
+}
+
+// Space used (memory, swap, VRAM, disk): the bar, the percentage and the
+// GiB pair. The GiB pair is its own part, so two numbers never touch.
+function modesUsedParts(m, part, zero, vertical) {
+  if (!m) {
+    return [];
+  }
+  var quiet = modesQuiet(part);
+  var sev = m.severity || 0;
+  var gauge = modesOn(part, "bar") && modesGaugeable(m, vertical);
+  var gib = modesOn(part, "gib") && modesText(m.gib) !== "";
+  var main = [];
+  if (gauge) {
+    main.push(modesPiece("gauge", "", Math.max(0, Math.min(1, m.ratio)), 0, quiet, sev));
+  }
+  if (modesOn(part, "percent") || (modesOn(part, "bar") && !gauge && !gib)) {
+    main.push(modesDigits(m, zero, quiet, sev));
+  }
+  var parts = [main];
+  if (gib) {
+    parts.push([modesPiece("text", m.gib, -1, 0, quiet, sev)]);
+  }
+  return parts;
+}
+
+// A reading shown or not: the clock, the power draw.
+function modesShowParts(text, part) {
+  if (!modesOn(part, "show") || modesText(text) === "") {
+    return [];
+  }
+  return [[modesPiece("text", text, -1, 0, modesQuiet(part), 0)]];
+}
+
+// A reading with an optional mark before it: the temp and its
+// thermometer, the net rates and their arrows, the disk rates and their
+// R/W tags. Its mark never shows without its value.
+function modesMarkedParts(m, part, markKey, text) {
+  if (!m || !modesOn(part, "value") || modesText(text) === "") {
+    return [];
+  }
+  var quiet = modesQuiet(part);
+  var sev = m.severity || 0;
+  var out = [];
+  if (modesOn(part, markKey) && modesText(m.glyph) !== "") {
+    out.push(modesMark(m.glyph, quiet, sev));
+  }
+  out.push(modesPiece("text", text, -1, 0, quiet, sev));
+  return [out];
+}
+
+// The load average: the chosen windows, as one reading.
+function modesAvgParts(m, part) {
+  if (!m) {
+    return [];
+  }
+  var keys = ["one", "five", "fifteen"];
+  var chosen = [];
+  var i = 0;
+  for (i = 0; i < keys.length; i++) {
+    if (modesOn(part, keys[i]) && modesText(m[keys[i]]) !== "") {
+      chosen.push(m[keys[i]]);
     }
   }
-  var handled = {};
-  for (i = 0; i < list.length; i++) {
-    var cur = list[i];
-    if (!cur || typeof cur.key !== "string") {
-      continue;
-    }
-    if (handled[cur.key]) {
-      continue;
-    }
-    var dev = modesDevice(cur);
-    var isUsage = modesIsUsage(cur);
-    var pair = modesPairKindsFor(dev);
-    if (pair !== null) {
-      var firstKey = dev + "_" + pair.first;
-      var secondKey = dev + "_" + pair.second;
-      var firstM = byKey[firstKey] || null;
-      var secondM = byKey[secondKey] || null;
-      if (!firstM && modesKindOf(cur) === pair.first) {
-        firstM = cur;
-      }
-      if (!secondM && modesKindOf(cur) === pair.second) {
-        secondM = cur;
-      }
-      if (firstM && secondM && !handled[firstKey] && !handled[secondKey]) {
-        out.push({
-          cell: "joined",
-          key: firstKey + "+" + secondKey,
-          usage: firstM,
-          temp: secondM,
-          // A word-labelled group always reads as its label text, never
-          // an icon+bar — the bar visual and the icon/word choice both
-          // hang off the same glyph slot, so words wins.
-          bare: words === true,
-          gaugeFirst: useGauge && !words
-        });
-        handled[firstKey] = true;
-        handled[secondKey] = true;
-        continue;
-      }
-      handled[cur.key] = true;
-      if (modesKindOf(cur) === pair.first && useGauge && !words) {
-        out.push(modesMakeGaugeCell(cur, showDigits));
-      } else {
-        out.push(modesMakeMetricCell(cur, words));
-      }
-      continue;
-    }
-    handled[cur.key] = true;
-    if (isUsage && useGauge && !words) {
-      out.push(modesMakeGaugeCell(cur, showDigits));
-    } else {
-      out.push(modesMakeMetricCell(cur, words));
+  if (chosen.length === 0) {
+    return [];
+  }
+  return [[modesPiece("text", chosen.join(" "), -1, 0, modesQuiet(part), 0)]];
+}
+
+// The label: the group's glyph, its word, both, or nothing.
+function modesLabelPart(first, label) {
+  var quiet = modesQuiet(label);
+  var out = [];
+  if (modesOn(label, "icon") && modesText(first.groupGlyph) !== "") {
+    out.push(modesMark(first.groupGlyph, quiet, 0));
+  }
+  if (modesOn(label, "word") && modesText(first.word) !== "") {
+    var word = modesMark(first.word, quiet, 0);
+    word.isWord = true;
+    out.push(word);
+  }
+  return out;
+}
+
+function modesByKind(items) {
+  var out = {};
+  var i = 0;
+  for (i = 0; i < items.length; i++) {
+    if (items[i] && typeof items[i].kind === "string") {
+      out[items[i].kind] = items[i];
     }
   }
   return out;
 }
 
-function modesIsHiddenKey(key, hidden) {
-  if (!modesIsArray((hidden)) || hidden.length === 0) {
-    return false;
-  }
+// One cell from its label and its readings. A cell with no reading is no
+// cell: a lonely label means nothing on a bar. The label warms with the
+// hottest reading it names. The metrics ride along for the tooltip.
+function modesCell(key, device, metrics, labelPart, parts, dim) {
+  var readings = [];
   var i = 0;
-  for (i = 0; i < hidden.length; i++) {
-    var h = hidden[i];
-    if (h === key) {
-      return true;
-    }
-    // Accept legacy keys without depending on Metrics.js.
-    if ((h === "cpu" && key === "cpu_usage") || (h === "cpu_usage" && key === "cpu")) {
-      return true;
-    }
-    if ((h === "temp" && key === "cpu_temp") || (h === "cpu_temp" && key === "temp")) {
-      return true;
-    }
-    if ((h === "mem" && key === "mem_usage") || (h === "mem_usage" && key === "mem")) {
-      return true;
+  for (i = 0; i < parts.length; i++) {
+    readings = readings.concat(parts[i]);
+  }
+  if (readings.length === 0) {
+    return null;
+  }
+  var severity = 0;
+  for (i = 0; i < readings.length; i++) {
+    severity = Math.max(severity, readings[i].severity || 0);
+  }
+  for (i = 0; i < labelPart.length; i++) {
+    if (!labelPart[i].quiet) {
+      labelPart[i].severity = severity;
     }
   }
-  return false;
+  var pieces = [];
+  modesAddPart(pieces, labelPart);
+  for (i = 0; i < parts.length; i++) {
+    modesAddPart(pieces, parts[i]);
+  }
+  return { key: key, device: device, pieces: pieces, severity: severity, dim: dim === true, metrics: metrics };
 }
 
-function modesPlaceholderMetric() {
-  if (typeof PLACEHOLDER !== "undefined" && PLACEHOLDER) {
-    return PLACEHOLDER;
+// The cells of one group, from its visible metrics in order. Every group
+// draws one cell, except fans: each fan is its own cell.
+function groupCells(items, prefs, id, vertical) {
+  var list = modesIsArray(items) ? items.filter(function (m) { return !!m; }) : [];
+  if (list.length === 0) {
+    return [];
   }
-  return {
+  var g = modesGroup(prefs, id);
+  var out = [];
+  var cell = null;
+  var i = 0;
+  if (id === "fan") {
+    for (i = 0; i < list.length; i++) {
+      var rpmText = modesText(list[i].bar) + (modesOn(g.rpm, "unit") ? " RPM" : "");
+      var rpm = modesOn(g.rpm, "value")
+        ? [[modesPiece("text", rpmText, -1, 0, modesQuiet(g.rpm), list[i].severity || 0)]]
+        : [];
+      cell = modesCell(list[i].key, id, [list[i]], modesLabelPart(list[i], g.label), rpm, list[i].dim);
+      if (cell) {
+        out.push(cell);
+      }
+    }
+    return out;
+  }
+  var k = modesByKind(list);
+  var parts = [];
+  if (id === "cpu" || id === "gpu") {
+    parts = parts.concat(modesLoadParts(k.usage, g.load, g.zero, vertical));
+    parts = parts.concat(modesShowParts(k.usage ? k.usage.clock : "", g.clock));
+    var temp = k.temp || null;
+    var tempText = temp ? modesText(temp.bar) + (modesOn(g.temp, "unit") ? modesText(temp.unit) : "") : "";
+    parts = parts.concat(modesMarkedParts(temp, g.temp, "icon", tempText));
+    if (id === "cpu") {
+      parts = parts.concat(modesAvgParts(k.avg, g.avg));
+    } else {
+      parts = parts.concat(modesUsedParts(k.vram, g.vram, g.zero, vertical));
+      parts = parts.concat(modesShowParts(k.power ? k.power.bar : "", g.power));
+    }
+  } else if (id === "mem") {
+    parts = parts.concat(modesUsedParts(k.usage, g.used, g.zero, vertical));
+    parts = parts.concat(modesUsedParts(k.swap, g.swap, g.zero, vertical));
+  } else if (id === "net") {
+    parts = parts.concat(modesMarkedParts(k.down, g.down, "icon", k.down ? k.down.bar : ""));
+    parts = parts.concat(modesMarkedParts(k.up, g.up, "icon", k.up ? k.up.bar : ""));
+  } else if (id === "disk") {
+    parts = parts.concat(modesUsedParts(k.usage, g.used, g.zero, vertical));
+    parts = parts.concat(modesMarkedParts(k.read, g.read, "tag", k.read ? k.read.bar : ""));
+    parts = parts.concat(modesMarkedParts(k.write, g.write, "tag", k.write ? k.write.bar : ""));
+  }
+  cell = modesCell(id, id, list, modesLabelPart(list[0], g.label), parts, list[0].dim);
+  if (cell) {
+    out.push(cell);
+  }
+  return out;
+}
+
+// The strip with nothing visible: one dimmed chip that opens the menu,
+// never a zero-pixel dead slot.
+function placeholderCell() {
+  return modesCell("placeholder", "placeholder", [{
     key: "placeholder",
     device: "placeholder",
     kind: "placeholder",
     label: "No metrics visible",
-    glyph: "",
+    groupGlyph: "",
+    word: "",
     bar: "—",
     value: "All metrics hidden",
     severity: 0,
-    dim: true,
-    percent: null,
-    tempC: null,
-    rpm: null,
-    mhz: null,
-    unit: "C",
-    ramFormat: "percent"
-  };
+    dim: true
+  }], [], [[modesPiece("text", "—", -1, 0, false, 0)]], true);
 }
 
-// Full pipeline: filter hidden, order is kept, then build cells.
-// An empty result falls back to one dimmed placeholder chip.
-function stripCells(allMetrics, hidden, mode, opts) {
-  var list = [];
-  if (modesIsArray(allMetrics)) {
-    list = allMetrics;
-  }
-  var visible = [];
+// Cells for the whole strip from contiguous per-group runs (see
+// Metrics.metricsGroupRuns); each run draws with its own group's prefs.
+function groupStripCells(runs, prefs, vertical) {
+  var out = [];
+  var list = modesIsArray(runs) ? runs : [];
   var i = 0;
-  // Prefer the shared shown() helper when it was loaded in the sandbox.
-  if (typeof shown === "function") {
-    try {
-      visible = shown(list, hidden);
-    } catch (e) {
-      visible = [];
-      for (i = 0; i < list.length; i++) {
-        if (list[i] && !modesIsHiddenKey(list[i].key, hidden)) {
-          visible.push(list[i]);
-        }
-      }
-    }
-  } else {
-    for (i = 0; i < list.length; i++) {
-      if (list[i] && !modesIsHiddenKey(list[i].key, hidden)) {
-        visible.push(list[i]);
-      }
+  for (i = 0; i < list.length; i++) {
+    if (list[i] && modesIsArray(list[i].items)) {
+      out = out.concat(groupCells(list[i].items, prefs, list[i].device, vertical));
     }
   }
-  var cells = buildStripCells(visible, mode, opts);
-  if (cells.length === 0) {
-    var ph = modesPlaceholderMetric();
-    cells.push({
-      cell: "metric",
-      key: "placeholder",
-      metric: ph,
-      bare: false
-    });
+  if (out.length === 0) {
+    out.push(placeholderCell());
   }
-  return cells;
+  return out;
 }

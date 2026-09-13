@@ -2,6 +2,12 @@
 # sysread - one-shot / streaming hardware sensor collector.
 # Reads /proc, /sys/class/hwmon (+ drm for Intel) and nvidia-smi (if present).
 # Emits one JSON object per line, schema version 2. See SPEC section 2.
+#
+# Cheap by design: sensor files are found once at startup (and again every
+# RESCAN_EVERY readings, for hotplug) and read with shell builtins, so a
+# reading forks nothing but `stat` for disk space and one `nvidia-smi` call
+# on NVIDIA. MONITOR_READ names what to read; anything it leaves out reads
+# as null (or []), so a switched-off piece costs nothing.
 set -u
 
 HWMON_ROOT="${MONITOR_HWMON_ROOT:-/sys/class/hwmon}"
@@ -9,86 +15,142 @@ DRM_ROOT="${MONITOR_DRM_ROOT:-/sys/class/drm}"
 NET_DEV_FILE="${MONITOR_NET_DEV_FILE:-/proc/net/dev}"
 ROOT_MOUNT="${MONITOR_ROOT_MOUNT:-/}"
 DISKSTATS_PATH="${MONITOR_DISKSTATS_PATH:-/proc/diskstats}"
+MOUNTS_FILE="${MONITOR_MOUNTS_FILE:-/proc/mounts}"
+# Choices the widget passes down from its prefs. "auto", or a source or an
+# interface this machine does not have, keeps the automatic pick; a mount
+# that cannot be read falls back to "/".
+GPU_WANTED="${MONITOR_GPU:-auto}"
+NET_IFACE_WANTED="${MONITOR_NET_IFACE:-auto}"
+# What to read, as a comma list of: cpu, temp, clocks, load, mem, gpu, net,
+# disk, io, fans, mounts. "all" (the default) reads everything, "none"
+# nothing but the CPU model and the GPU sources found at startup.
+READ_LIST=",${MONITOR_READ:-all},"
+RESCAN_EVERY=30
 
 # ---------------------------------------------------------------------------
-# Persistent state (priming / once-only detection)
+# Persistent state (priming / once-only detection / sensor caches)
 # ---------------------------------------------------------------------------
 CPU_PREV_IDLE=""
 CPU_PREV_TOTAL=""
 GPU_SOURCE="undecided" # nvidia | amd | intel | none
-CPU_MODEL_CACHED=""
-CPU_CORES_CACHED=""
+GPU_SOURCES_JSON="[]"  # every source that answered at startup
 CPU_INFO_DONE=0
 INTEL_PREV_BUSY=""
 INTEL_PREV_TIME_NS=""
 NET_IFACE_DECIDED=0
 NET_IFACE=""
+NET_IFACES_JSON="[]"
 NET_PREV_RX=""
 NET_PREV_TX=""
-NET_PREV_TIME_NS=""
+NET_PREV_TIME_US=""
 DISK_PREV_READ=""
 DISK_PREV_WRITE=""
-DISK_PREV_TIME_NS=""
+DISK_PREV_TIME_US=""
+READINGS=0
+NOW_US=0
+
+# Sensor files, found by scan_sensors / scan_intel_engines.
+TEMP_PACKAGE=()   # temp*_input of the CPU package (Tctl/Tdie, Package id)
+TEMP_OTHER=()     # every other temp*_input, the fallback
+FAN_INPUTS=()     # fan*_input files, sorted by fan id
+FAN_JSON_HEAD=()  # the JSON of each fan up to its rpm value
+AMD_DIRS=()       # hwmon dirs of amdgpu chips
+BUSY_FILES=()     # gpu_busy_percent files, any chip
+FREQ_FILES=()     # cpufreq scaling_cur_freq files
+INTEL_ENGINES=()  # drm busy_time files
 
 # Per-reading values (JSON fragments: number or the literal "null", except
 # fans/load/detail/model which hold ready-made JSON snippets).
-VAL_CPU="null"
-VAL_TEMP="null"
-VAL_MEM="null"
-VAL_GPU="null"
-VAL_GPU_TEMP="null"
-FANS_JSON="[]"
-VAL_CPU_MHZ="null"
-VAL_GPU_MHZ="null"
-VAL_MEM_USED="null"
-VAL_MEM_TOTAL="null"
-VAL_SWAP_USED="null"
-VAL_SWAP_TOTAL="null"
+reset_reading() {
+  VAL_CPU="null"
+  VAL_TEMP="null"
+  VAL_MEM="null"
+  VAL_GPU="null"
+  VAL_GPU_TEMP="null"
+  FANS_JSON="[]"
+  VAL_CPU_MHZ="null"
+  VAL_GPU_MHZ="null"
+  VAL_MEM_USED="null"
+  VAL_MEM_TOTAL="null"
+  VAL_SWAP_USED="null"
+  VAL_SWAP_TOTAL="null"
+  LOAD_JSON="null"
+  GPU_DETAIL_JSON="null"
+  VAL_NET_DOWN="null"
+  VAL_NET_UP="null"
+  NET_JSON="null"
+  VAL_DISK_USED_PCT="null"
+  VAL_DISK_USED_B="null"
+  VAL_DISK_TOTAL_B="null"
+  DISK_MOUNT="$ROOT_MOUNT"
+  DISK_MOUNTS_JSON="[]"
+  VAL_DISK_READ="null"
+  VAL_DISK_WRITE="null"
+  DISK_JSON="null"
+  NVIDIA_VRAM_USED_B="null"
+  NVIDIA_VRAM_TOTAL_B="null"
+  NVIDIA_WATTS="null"
+  AMD_VRAM_USED_B="null"
+  AMD_VRAM_TOTAL_B="null"
+  AMD_WATTS="null"
+}
+reset_reading
 VAL_CPU_MODEL_JSON="null"
 VAL_CPU_CORES="null"
-LOAD_JSON="null"
-GPU_DETAIL_JSON="null"
-VAL_NET_DOWN="null"
-VAL_NET_UP="null"
-NET_JSON="null"
-VAL_DISK_USED_PCT="null"
-VAL_DISK_READ="null"
-VAL_DISK_WRITE="null"
-DISK_JSON="null"
-# NVIDIA per-reading cache (filled by exactly one nvidia-smi call per reading)
-NVIDIA_UTIL="null"
-NVIDIA_TEMP="null"
-NVIDIA_CLOCK="null"
-NVIDIA_VRAM_USED_B="null"
-NVIDIA_VRAM_TOTAL_B="null"
-NVIDIA_WATTS="null"
 
 # ---------------------------------------------------------------------------
-# Small helpers
+# Small helpers. Each writes into a variable the caller names, so none of
+# them costs a subshell.
 # ---------------------------------------------------------------------------
 
-# trim <string>: strip leading/trailing whitespace (space, tab, CR, newline).
-trim() {
-  local s="${1:-}"
-  # strip leading
-  s="${s#"${s%%[![:space:]]*}"}"
-  # strip trailing
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
+# wants <name>: succeeds when MONITOR_READ asks for <name>.
+wants() {
+  [[ "$READ_LIST" == *",all,"* || "$READ_LIST" == *",$1,"* ]]
 }
 
-# json_quote <string>: print the string as a JSON string literal.
-json_quote() {
-  local s="${1:-}"
-  s=${s//\\/\\\\}
-  s=${s//\"/\\\"}
-  s=${s//$'\t'/\\t}
-  s=${s//$'\n'/\\n}
-  s=${s//$'\r'/\\r}
-  s=${s//$'\b'/\\b}
-  s=${s//$'\f'/\\f}
-  printf '"%s"' "$s"
+# trim_to <var> <string>: <var> = <string> without surrounding whitespace.
+trim_to() {
+  local __trim="${2:-}"
+  __trim="${__trim#"${__trim%%[![:space:]]*}"}"
+  __trim="${__trim%"${__trim##*[![:space:]]}"}"
+  printf -v "$1" '%s' "$__trim"
 }
+
+# quote_to <var> <string>: <var> = <string> as a JSON string literal.
+quote_to() {
+  local __q="${2:-}"
+  __q=${__q//\\/\\\\}
+  __q=${__q//\"/\\\"}
+  __q=${__q//$'\t'/\\t}
+  __q=${__q//$'\n'/\\n}
+  __q=${__q//$'\r'/\\r}
+  __q=${__q//$'\b'/\\b}
+  __q=${__q//$'\f'/\\f}
+  printf -v "$1" '"%s"' "$__q"
+}
+
+# read_to <var> <file>: <var> = the file's first line, trimmed; fails when
+# the file cannot be read.
+read_to() {
+  local __line=""
+  { IFS= read -r __line || [[ -n "$__line" ]]; } 2>/dev/null < "$2" || return 1
+  trim_to "$1" "$__line"
+}
+
+# lines_to <array> <file>: every line of a /proc file, in one sequential
+# read. `while read` seeks back after each line and /proc rebuilds the
+# text on a seek, so a line that changed length (cpu MHz) shifts the rest:
+# one line is lost or read twice.
+lines_to() {
+  [[ -r "$2" ]] || return 1
+  mapfile -t "$1" 2>/dev/null < "$2"
+}
+
+# One /proc/net/dev line: name, rx bytes, seven more rx counters, tx bytes.
+NET_LINE_RE='^[[:space:]]*([^[:space:]:]+):[[:space:]]*([0-9]+)([[:space:]]+[0-9]+){7}[[:space:]]+([0-9]+)'
+# One /proc/diskstats line: major, minor, name, reads, merged, sectors
+# read, then ms, writes and merged, then sectors written.
+DISK_LINE_RE='^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+([^[:space:]]+)[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+([0-9]+)([[:space:]]+[0-9]+){3}[[:space:]]+([0-9]+)'
 
 # is_uint <string>: succeeds if the string is a non-negative integer.
 is_uint() {
@@ -106,31 +168,116 @@ is_number() {
   [[ "${1:-}" =~ ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]]
 }
 
-# read_first_line <file>: print first line of file, or fail.
-read_first_line() {
-  local f="$1"
-  local line=""
-  IFS= read -r line < "$f" 2>/dev/null || return 1
-  printf '%s' "$line"
-}
-
-# chip_name_for <hwmon_dir>: contents of "name" file, else dir basename.
-chip_name_for() {
-  local dir="$1"
-  local name=""
-  if name="$(read_first_line "$dir/name" 2>/dev/null)"; then
-    name="$(trim "$name")"
-    if [[ -n "$name" ]]; then
-      printf '%s' "$name"
-      return 0
-    fi
+# now_us: microseconds since the epoch into NOW_US, from bash's own clock.
+now_us() {
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    local t="${EPOCHREALTIME/[.,]/}"
+    NOW_US=$((10#$t))
+  else
+    NOW_US=$(($(date +%s%N) / 1000))
   fi
-  printf '%s' "${dir##*/}"
 }
 
-# to_lower <string>
-to_lower() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+# ---------------------------------------------------------------------------
+# Sensor discovery (at startup, then every RESCAN_EVERY readings)
+# ---------------------------------------------------------------------------
+
+# scan_sensors: find every hwmon temp and fan input, the amdgpu chips and
+# the cpufreq files. Labels and chip names cannot change, so they are read
+# here once instead of on every reading.
+scan_sensors() {
+  TEMP_PACKAGE=()
+  TEMP_OTHER=()
+  FAN_INPUTS=()
+  FAN_JSON_HEAD=()
+  AMD_DIRS=()
+  BUSY_FILES=()
+  FREQ_FILES=()
+  local dir chip chip_lc input label base fan_name fnum pref
+  local -a fans=()
+  for dir in "$HWMON_ROOT"/*; do
+    [[ -d "$dir" ]] || continue
+    chip=""
+    read_to chip "$dir/name" || true
+    [[ -n "$chip" ]] || chip="${dir##*/}"
+    chip_lc="${chip,,}"
+    if [[ "$chip_lc" == *amdgpu* ]]; then
+      AMD_DIRS+=("$dir")
+    fi
+    if [[ -f "$dir/gpu_busy_percent" && -r "$dir/gpu_busy_percent" ]]; then
+      BUSY_FILES+=("$dir/gpu_busy_percent")
+    fi
+    for input in "$dir"/temp*_input; do
+      [[ -f "$input" ]] || continue
+      label=""
+      read_to label "${input%_input}_label" || true
+      pref=0
+      if [[ "$chip_lc" == "k10temp" || "$chip_lc" == "zenpower" ]]; then
+        if [[ "$label" == "Tctl" || "$label" == "Tdie" ]]; then
+          pref=1
+        fi
+      elif [[ "$chip_lc" == "coretemp" && "$label" == *"Package id"* ]]; then
+        pref=1
+      fi
+      if [[ "$pref" -eq 1 ]]; then
+        TEMP_PACKAGE+=("$input")
+      else
+        TEMP_OTHER+=("$input")
+      fi
+    done
+    for input in "$dir"/fan*_input; do
+      [[ -f "$input" ]] || continue
+      base="${input##*/}"         # e.g. fan1_input
+      fan_name="${base%_input}"   # e.g. fan1
+      fnum="${fan_name#fan}"
+      label=""
+      read_to label "$dir/${fan_name}_label" || true
+      if [[ -z "$label" ]]; then
+        if is_uint "$fnum"; then
+          label="Fan $fnum"
+        else
+          label="Fan $fan_name"
+        fi
+      fi
+      fans+=("$chip/$fan_name|$chip|$label|$input")
+    done
+  done
+  # Fans in a stable order: sorted by id, once per scan.
+  if [[ "${#fans[@]}" -gt 0 ]]; then
+    local id fchip flabel finput jid jchip jlabel
+    while IFS='|' read -r id fchip flabel finput; do
+      [[ -n "$id" ]] || continue
+      quote_to jid "$id"
+      quote_to jchip "$fchip"
+      quote_to jlabel "$flabel"
+      FAN_INPUTS+=("$finput")
+      FAN_JSON_HEAD+=("{\"id\":$jid,\"chip\":$jchip,\"label\":$jlabel,\"rpm\":")
+    done < <(printf '%s\n' "${fans[@]}" | LC_ALL=C sort)
+  fi
+  local f
+  for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
+    if [[ -r "$f" ]]; then
+      FREQ_FILES+=("$f")
+    fi
+  done
+}
+
+# scan_intel_engines: Intel drm busy_time engines, also nested deeper.
+scan_intel_engines() {
+  INTEL_ENGINES=()
+  local b
+  for b in "$DRM_ROOT"/card*/engine/*/busy_time "$DRM_ROOT"/card*/gt*/busy_time; do
+    if [[ -f "$b" && -r "$b" ]]; then
+      INTEL_ENGINES+=("$b")
+    fi
+  done
+  if [[ "${#INTEL_ENGINES[@]}" -eq 0 && -d "$DRM_ROOT" ]]; then
+    while IFS= read -r b; do
+      if [[ -n "$b" && -r "$b" ]]; then
+        INTEL_ENGINES+=("$b")
+      fi
+    done < <(find "$DRM_ROOT" -name busy_time 2>/dev/null | LC_ALL=C sort || true)
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -141,31 +288,24 @@ provider_cpu_info_once() {
     return 0
   fi
   CPU_INFO_DONE=1
-  CPU_MODEL_CACHED=""
-  CPU_CORES_CACHED=""
-  if [[ -r /proc/cpuinfo ]]; then
-    local model=""
-    model="$(awk -F: '/^model name/ {sub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null || true)"
-    model="$(trim "${model:-}")"
-    CPU_MODEL_CACHED="$model"
-    local cores=""
-    cores="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || true)"
-    cores="$(trim "${cores:-}")"
-    if is_uint "$cores"; then
-      CPU_CORES_CACHED="$cores"
-    else
-      CPU_CORES_CACHED=""
-    fi
+  local -a lines=()
+  local line model="" cores=0
+  lines_to lines /proc/cpuinfo || true
+  for line in "${lines[@]}"; do
+    case "$line" in
+      processor[[:space:]]*:*) cores=$((cores + 1)) ;;
+      "model name"*:*)
+        if [[ -z "$model" ]]; then
+          trim_to model "${line#*:}"
+        fi
+        ;;
+    esac
+  done
+  if [[ -n "$model" ]]; then
+    quote_to VAL_CPU_MODEL_JSON "$model"
   fi
-  if [[ -n "$CPU_MODEL_CACHED" ]]; then
-    VAL_CPU_MODEL_JSON="$(json_quote "$CPU_MODEL_CACHED")"
-  else
-    VAL_CPU_MODEL_JSON="null"
-  fi
-  if [[ -n "$CPU_CORES_CACHED" ]]; then
-    VAL_CPU_CORES="$CPU_CORES_CACHED"
-  else
-    VAL_CPU_CORES="null"
+  if [[ "$cores" -gt 0 ]]; then
+    VAL_CPU_CORES="$cores"
   fi
 }
 
@@ -173,46 +313,30 @@ provider_cpu_info_once() {
 # provider: cpu (percentage via /proc/stat delta; first call primes -> null)
 # ---------------------------------------------------------------------------
 provider_cpu_usage() {
-  local line=""
-  if ! line="$(awk '/^cpu /{print $2, $3, $4, $5, $6, $7, $8, $9; exit}' /proc/stat 2>/dev/null)"; then
-    VAL_CPU="null"
-    return 0
-  fi
-  if [[ -z "$line" ]]; then
-    VAL_CPU="null"
-    return 0
-  fi
-  local user nice system idle iowait irq softirq steal
-  read -r user nice system idle iowait irq softirq steal <<< "$line"
+  VAL_CPU="null"
+  local label user nice system idle iowait irq softirq steal v
+  { read -r label user nice system idle iowait irq softirq steal _; } 2>/dev/null < /proc/stat || return 0
+  [[ "$label" == "cpu" ]] || return 0
   for v in "$user" "$nice" "$system" "$idle" "$iowait" "$irq" "$softirq" "$steal"; do
-    if ! is_uint "$v"; then
-      VAL_CPU="null"
-      return 0
-    fi
+    is_uint "$v" || return 0
   done
   local cur_idle=$((idle + iowait))
   local cur_total=$((user + nice + system + idle + iowait + irq + softirq + steal))
   if [[ -z "$CPU_PREV_IDLE" || -z "$CPU_PREV_TOTAL" ]]; then
     CPU_PREV_IDLE="$cur_idle"
     CPU_PREV_TOTAL="$cur_total"
-    VAL_CPU="null"
     return 0
   fi
   local d_idle=$((cur_idle - CPU_PREV_IDLE))
   local d_total=$((cur_total - CPU_PREV_TOTAL))
   CPU_PREV_IDLE="$cur_idle"
   CPU_PREV_TOTAL="$cur_total"
-  if [[ "$d_total" -le 0 ]]; then
-    VAL_CPU="null"
-    return 0
-  fi
+  [[ "$d_total" -gt 0 ]] || return 0
   local busy=$((d_total - d_idle))
   if [[ "$busy" -lt 0 ]]; then
     busy=0
   fi
-  # rounded percent
   local pct=$(((busy * 100 + d_total / 2) / d_total))
-  if [[ "$pct" -lt 0 ]]; then pct=0; fi
   if [[ "$pct" -gt 100 ]]; then pct=100; fi
   VAL_CPU="$pct"
 }
@@ -221,19 +345,18 @@ provider_cpu_usage() {
 # provider: memory (percentage + KiB counters from /proc/meminfo)
 # ---------------------------------------------------------------------------
 provider_memory() {
-  VAL_MEM="null"
-  VAL_MEM_USED="null"
-  VAL_MEM_TOTAL="null"
-  VAL_SWAP_USED="null"
-  VAL_SWAP_TOTAL="null"
-  if [[ ! -r /proc/meminfo ]]; then
-    return 0
-  fi
-  local mem_total="" mem_avail="" swap_total="" swap_free=""
-  mem_total="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null || true)"
-  mem_avail="$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null || true)"
-  swap_total="$(awk '/^SwapTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null || true)"
-  swap_free="$(awk '/^SwapFree:/{print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  local -a lines=()
+  lines_to lines /proc/meminfo || return 0
+  local line mem_total="" mem_avail="" swap_total="" swap_free=""
+  for line in "${lines[@]}"; do
+    [[ "$line" =~ ^(MemTotal|MemAvailable|SwapTotal|SwapFree):[[:space:]]+([0-9]+) ]] || continue
+    case "${BASH_REMATCH[1]}" in
+      MemTotal) mem_total="${BASH_REMATCH[2]}" ;;
+      MemAvailable) mem_avail="${BASH_REMATCH[2]}" ;;
+      SwapTotal) swap_total="${BASH_REMATCH[2]}" ;;
+      SwapFree) swap_free="${BASH_REMATCH[2]}"; break ;;
+    esac
+  done
   if is_uint "$mem_total" && is_uint "$mem_avail"; then
     VAL_MEM_TOTAL="$mem_total"
     local used=$((mem_total - mem_avail))
@@ -258,75 +381,32 @@ provider_memory() {
 # ---------------------------------------------------------------------------
 # provider: hwmon temperature (package preference, sane-range fallback)
 # ---------------------------------------------------------------------------
+# hottest_to <var> <input>...: <var> = the hottest reading in the sane
+# range (0, 150) °C, or empty.
+hottest_to() {
+  local __var="$1" __best="" __input __raw __c
+  shift
+  for __input in "$@"; do
+    read_to __raw "$__input" || continue
+    [[ "$__raw" =~ ^-?[0-9]+$ ]] || continue
+    __c=$((__raw / 1000))
+    if [[ "$__c" -gt 0 && "$__c" -lt 150 && ( -z "$__best" || "$__c" -gt "$__best" ) ]]; then
+      __best="$__c"
+    fi
+  done
+  printf -v "$__var" '%s' "$__best"
+}
+
+# The package sensor alone when it answers: most machines expose dozens
+# of temp inputs, and some (wifi, ACPI zones) are slow to read.
 provider_hwmon_temp() {
-  VAL_TEMP="null"
-  local pref=""
-  local fallback=""
-  local chip_dir
-  # Expand glob safely; empty tree must not fail under set -u.
-  local -a dirs=()
-  for chip_dir in "$HWMON_ROOT"/*; do
-    [[ -d "$chip_dir" ]] || continue
-    dirs+=("$chip_dir")
-  done
-  if [[ "${#dirs[@]}" -eq 0 ]]; then
-    return 0
+  local best=""
+  hottest_to best "${TEMP_PACKAGE[@]}"
+  if [[ -z "$best" ]]; then
+    hottest_to best "${TEMP_OTHER[@]}"
   fi
-  local dir chip chip_lc input label_file label raw celsius
-  for dir in "${dirs[@]}"; do
-    chip="$(chip_name_for "$dir")"
-    chip_lc="$(to_lower "$chip")"
-    for input in "$dir"/temp*_input; do
-      [[ -e "$input" ]] || continue
-      [[ -f "$input" ]] || continue
-      if ! raw="$(read_first_line "$input")"; then
-        continue
-      fi
-      raw="$(trim "$raw")"
-      case "$raw" in
-        ''|*[!0-9-]*) continue ;;
-      esac
-      if [[ ! "$raw" =~ ^-?[0-9]+$ ]]; then
-        continue
-      fi
-      celsius=$((raw / 1000))
-      # sane range (0, 150) applies to every candidate
-      if [[ "$celsius" -le 0 || "$celsius" -ge 150 ]]; then
-        continue
-      fi
-      label_file="${input%_input}_label"
-      label=""
-      if [[ -f "$label_file" ]]; then
-        label="$(read_first_line "$label_file" 2>/dev/null || true)"
-        label="$(trim "$label")"
-      fi
-      local is_pref=0
-      if [[ "$chip_lc" == "k10temp" || "$chip_lc" == "zenpower" ]]; then
-        if [[ "$label" == "Tctl" || "$label" == "Tdie" ]]; then
-          is_pref=1
-        fi
-      elif [[ "$chip_lc" == "coretemp" ]]; then
-        if [[ "$label" == *"Package id"* ]]; then
-          is_pref=1
-        fi
-      fi
-      if [[ "$is_pref" -eq 1 ]]; then
-        if [[ -z "$pref" || "$celsius" -gt "$pref" ]]; then
-          pref="$celsius"
-        fi
-      else
-        if [[ -z "$fallback" || "$celsius" -gt "$fallback" ]]; then
-          fallback="$celsius"
-        fi
-      fi
-    done
-  done
-  if [[ -n "$pref" ]]; then
-    VAL_TEMP="$pref"
-  elif [[ -n "$fallback" ]]; then
-    VAL_TEMP="$fallback"
-  else
-    VAL_TEMP="null"
+  if [[ -n "$best" ]]; then
+    VAL_TEMP="$best"
   fi
 }
 
@@ -334,164 +414,91 @@ provider_hwmon_temp() {
 # provider: fans (every readable fan as {id,chip,label,rpm})
 # ---------------------------------------------------------------------------
 provider_fans() {
-  FANS_JSON="[]"
-  local -a rows=()
-  local chip_dir
-  for chip_dir in "$HWMON_ROOT"/*; do
-    [[ -d "$chip_dir" ]] || continue
-    local chip
-    chip="$(chip_name_for "$chip_dir")"
-    local input
-    for input in "$chip_dir"/fan*_input; do
-      [[ -e "$input" ]] || continue
-      [[ -f "$input" ]] || continue
-      local base fan_name fnum label_file label raw
-      base="${input##*/}"            # e.g. fan1_input
-      fan_name="${base%_input}"      # e.g. fan1
-      case "$fan_name" in
-        fan*) ;;
-        *) continue ;;
-      esac
-      fnum="${fan_name#fan}"
-      if ! is_uint "$fnum"; then
-        fnum="$fan_name"
-      fi
-      if ! raw="$(read_first_line "$input")"; then
-        continue
-      fi
-      raw="$(trim "$raw")"
-      if ! is_uint "$raw"; then
-        continue
-      fi
-      label_file="$chip_dir/${fan_name}_label"
-      label=""
-      if [[ -f "$label_file" ]]; then
-        label="$(read_first_line "$label_file" 2>/dev/null || true)"
-        label="$(trim "$label")"
-      fi
-      if [[ -z "$label" ]]; then
-        if is_uint "$fnum"; then
-          label="Fan $fnum"
-        else
-          label="Fan $fan_name"
-        fi
-      fi
-      local id="$chip/$fan_name"
-      rows+=("$id|$chip|$label|$raw")
-    done
+  local json="" i raw
+  for i in "${!FAN_INPUTS[@]}"; do
+    read_to raw "${FAN_INPUTS[$i]}" || continue
+    is_uint "$raw" || continue
+    json+="${json:+,}${FAN_JSON_HEAD[$i]}$raw}"
   done
-  if [[ "${#rows[@]}" -eq 0 ]]; then
-    FANS_JSON="[]"
-    return 0
-  fi
-  # stable order: sort by id
-  local sorted
-  sorted="$(printf '%s\n' "${rows[@]}" | LC_ALL=C sort)"
-  local json="[" first=1
-  local line id chip label rpm
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    IFS='|' read -r id chip label rpm <<< "$line"
-    local jid jchip jlabel
-    jid="$(json_quote "$id")"
-    jchip="$(json_quote "$chip")"
-    jlabel="$(json_quote "$label")"
-    if [[ "$first" -eq 1 ]]; then
-      first=0
-    else
-      json+=","
-    fi
-    json+="{\"id\":$jid,\"chip\":$jchip,\"label\":$jlabel,\"rpm\":$rpm}"
-  done <<< "$sorted"
-  json+="]"
-  FANS_JSON="$json"
+  FANS_JSON="[$json]"
 }
 
 # ---------------------------------------------------------------------------
 # GPU source selection (once at startup)
 # ---------------------------------------------------------------------------
+
+# nvidia-smi present and answering: a numeric utilization on the first line.
+gpu_probe_nvidia() {
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  local probe=""
+  IFS= read -r probe < <(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null) || true
+  trim_to probe "$probe"
+  [[ "$probe" =~ ^[0-9]+ ]]
+}
+
+# amdgpu gpu_busy_percent anywhere under the hwmon root.
+gpu_probe_amd() {
+  [[ "${#BUSY_FILES[@]}" -gt 0 ]]
+}
+
+# Intel drm busy_time engines.
+gpu_probe_intel() {
+  [[ "${#INTEL_ENGINES[@]}" -gt 0 ]]
+}
+
+# pick_gpu_source: probe every source once, then read the one the widget
+# asked for (MONITOR_GPU) when it answers, else the first that answers in
+# this order: nvidia, amd, intel. The answering list goes to the menu.
 pick_gpu_source() {
   if [[ "$GPU_SOURCE" != "undecided" ]]; then
     return 0
   fi
-  # 1) nvidia-smi present and answering?
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    local probe=""
-    probe="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -n 1 || true)"
-    probe="$(trim "${probe:-}")"
-    # answering means a numeric utilization on the first line
-    if [[ "$probe" =~ ^[0-9]+ ]]; then
-      GPU_SOURCE="nvidia"
-      return 0
-    fi
-  fi
-  # 2) amdgpu gpu_busy_percent anywhere under the hwmon root?
-  local d
-  for d in "$HWMON_ROOT"/*; do
-    [[ -d "$d" ]] || continue
-    if [[ -f "$d/gpu_busy_percent" && -r "$d/gpu_busy_percent" ]]; then
-      GPU_SOURCE="amd"
-      return 0
+  local sources="" list="" s
+  for s in nvidia amd intel; do
+    if "gpu_probe_$s"; then
+      sources+="${sources:+ }$s"
+      list+="${list:+,}\"$s\""
     fi
   done
-  # 3) Intel drm busy_time engines?
-  local b
-  for b in "$DRM_ROOT"/card*/engine/*/busy_time "$DRM_ROOT"/card*/gt*/busy_time; do
-    if [[ -f "$b" && -r "$b" ]]; then
-      GPU_SOURCE="intel"
-      return 0
-    fi
-  done
-  # also try nested engine dirs one level deeper (robustness, still cheap)
-  if [[ -d "$DRM_ROOT" ]]; then
-    local found=""
-    found="$(find "$DRM_ROOT" -name busy_time -readable 2>/dev/null | head -n 1 || true)"
-    if [[ -n "$found" ]]; then
-      GPU_SOURCE="intel"
-      return 0
-    fi
-  fi
+  GPU_SOURCES_JSON="[$list]"
   GPU_SOURCE="none"
+  for s in $sources; do
+    if [[ "$s" == "$GPU_WANTED" ]]; then
+      GPU_SOURCE="$s"
+      return 0
+    fi
+  done
+  for s in $sources; do
+    GPU_SOURCE="$s"
+    return 0
+  done
 }
 
 # ---------------------------------------------------------------------------
 # provider: gpu-nvidia (ONE nvidia-smi call per reading, shared fields)
 # ---------------------------------------------------------------------------
 provider_gpu_nvidia() {
-  NVIDIA_UTIL="null"
-  NVIDIA_TEMP="null"
-  NVIDIA_CLOCK="null"
-  NVIDIA_VRAM_USED_B="null"
-  NVIDIA_VRAM_TOTAL_B="null"
-  NVIDIA_WATTS="null"
-  VAL_GPU="null"
-  VAL_GPU_TEMP="null"
-  VAL_GPU_MHZ="null"
   local out=""
-  out="$(nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,clocks.sm,memory.used,memory.total,power.draw --format=csv,noheader,nounits 2>/dev/null | head -n 1 || true)"
-  if [[ -z "$(trim "$out")" ]]; then
-    return 0
-  fi
+  IFS= read -r out < <(nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,clocks.sm,memory.used,memory.total,power.draw --format=csv,noheader,nounits 2>/dev/null) || true
+  trim_to out "$out"
+  [[ -n "$out" ]] || return 0
   local util temp clock mem_used mem_total power
   IFS=',' read -r util temp clock mem_used mem_total power <<< "$out"
-  util="$(trim "${util:-}")"
-  temp="$(trim "${temp:-}")"
-  clock="$(trim "${clock:-}")"
-  mem_used="$(trim "${mem_used:-}")"
-  mem_total="$(trim "${mem_total:-}")"
-  power="$(trim "${power:-}")"
+  trim_to util "${util:-}"
+  trim_to temp "${temp:-}"
+  trim_to clock "${clock:-}"
+  trim_to mem_used "${mem_used:-}"
+  trim_to mem_total "${mem_total:-}"
+  trim_to power "${power:-}"
   # utilization may arrive as "23" (single field query) or "23 %" etc; take leading int
   if [[ "$util" =~ ^([0-9]+) ]]; then
-    NVIDIA_UTIL="${BASH_REMATCH[1]}"
-    VAL_GPU="$NVIDIA_UTIL"
+    VAL_GPU="${BASH_REMATCH[1]}"
   fi
   if [[ "$temp" =~ ^([0-9]+) ]]; then
-    NVIDIA_TEMP="${BASH_REMATCH[1]}"
-    VAL_GPU_TEMP="$NVIDIA_TEMP"
+    VAL_GPU_TEMP="${BASH_REMATCH[1]}"
   fi
   if [[ "$clock" =~ ^([0-9]+) ]]; then
-    NVIDIA_CLOCK="${BASH_REMATCH[1]}"
-    VAL_GPU_MHZ="$NVIDIA_CLOCK"
+    VAL_GPU_MHZ="${BASH_REMATCH[1]}"
   fi
   if [[ "$mem_used" =~ ^([0-9]+) ]]; then
     NVIDIA_VRAM_USED_B="$((BASH_REMATCH[1] * 1048576))"
@@ -510,99 +517,46 @@ provider_gpu_nvidia() {
 # ---------------------------------------------------------------------------
 # provider: gpu-amd (gpu_busy_percent + amdgpu sysfs VRAM/power/clocks/temp)
 # ---------------------------------------------------------------------------
+
+# amd_mhz_to <var> <file>: the file's Hz reading as MHz, if positive.
+amd_mhz_to() {
+  local __hz=""
+  read_to __hz "$2" || return 1
+  is_uint "$__hz" || return 1
+  [[ $((__hz / 1000000)) -gt 0 ]] || return 1
+  printf -v "$1" '%s' "$((__hz / 1000000))"
+}
+
 provider_gpu_amd() {
-  VAL_GPU="null"
-  VAL_GPU_TEMP="null"
-  VAL_GPU_MHZ="null"
-  local vram_used="null" vram_total="null" watts="null"
-  # utilization: first readable numeric gpu_busy_percent (sorted for stability)
-  local d f raw
-  for d in "$HWMON_ROOT"/*; do
-    [[ -d "$d" ]] || continue
-    f="$d/gpu_busy_percent"
-    [[ -f "$f" ]] || continue
-    if ! raw="$(read_first_line "$f")"; then
-      continue
-    fi
-    raw="$(trim "$raw")"
+  local f raw d input m best="" mhz=""
+  # utilization: the first numeric gpu_busy_percent (scan order is sorted)
+  for f in "${BUSY_FILES[@]}"; do
+    read_to raw "$f" || continue
     if [[ "$raw" =~ ^([0-9]+) ]]; then
       VAL_GPU="${BASH_REMATCH[1]}"
       break
     fi
   done
   # gpu temp: hottest sane temp among amdgpu chips
-  local best=""
-  for d in "$HWMON_ROOT"/*; do
-    [[ -d "$d" ]] || continue
-    local chip
-    chip="$(chip_name_for "$d")"
-    if [[ "$(to_lower "$chip")" != *amdgpu* ]]; then
-      continue
-    fi
-    local input
-    for input in "$d"/temp*_input; do
-      [[ -e "$input" ]] || continue
-      if ! raw="$(read_first_line "$input")"; then
-        continue
-      fi
-      raw="$(trim "$raw")"
-      if [[ ! "$raw" =~ ^-?[0-9]+$ ]]; then
-        continue
-      fi
-      local c=$((raw / 1000))
-      if [[ "$c" -le 0 || "$c" -ge 150 ]]; then
-        continue
-      fi
-      if [[ -z "$best" || "$c" -gt "$best" ]]; then
-        best="$c"
-      fi
-    done
+  local -a temps=()
+  for d in "${AMD_DIRS[@]}"; do
+    temps+=("$d"/temp*_input)
   done
+  hottest_to best "${temps[@]}"
   if [[ -n "$best" ]]; then
     VAL_GPU_TEMP="$best"
   fi
-  # gpu clock: prefer freq1_input (sclk) under amdgpu, else hottest freq*_input
-  local mhz=""
-  for d in "$HWMON_ROOT"/*; do
-    [[ -d "$d" ]] || continue
-    local chip
-    chip="$(chip_name_for "$d")"
-    if [[ "$(to_lower "$chip")" != *amdgpu* ]]; then
-      continue
-    fi
-    if [[ -f "$d/freq1_input" ]]; then
-      if raw="$(read_first_line "$d/freq1_input" 2>/dev/null)"; then
-        raw="$(trim "$raw")"
-        if is_uint "$raw" && [[ "$raw" -gt 0 ]]; then
-          local m=$((raw / 1000000))
-          if [[ "$m" -gt 0 && ( -z "$mhz" || "$m" -gt "$mhz" ) ]]; then
-            mhz="$m"
-          fi
-        fi
-      fi
+  # gpu clock: prefer freq1_input (sclk), else the highest freq*_input
+  for d in "${AMD_DIRS[@]}"; do
+    if amd_mhz_to m "$d/freq1_input" && [[ -z "$mhz" || "$m" -gt "$mhz" ]]; then
+      mhz="$m"
     fi
   done
   if [[ -z "$mhz" ]]; then
-    # fallback: max over any freq*_input under amdgpu
-    for d in "$HWMON_ROOT"/*; do
-      [[ -d "$d" ]] || continue
-      local chip
-      chip="$(chip_name_for "$d")"
-      if [[ "$(to_lower "$chip")" != *amdgpu* ]]; then
-        continue
-      fi
-      local input
+    for d in "${AMD_DIRS[@]}"; do
       for input in "$d"/freq*_input; do
-        [[ -e "$input" ]] || continue
-        if ! raw="$(read_first_line "$input")"; then
-          continue
-        fi
-        raw="$(trim "$raw")"
-        if is_uint "$raw" && [[ "$raw" -gt 0 ]]; then
-          local m=$((raw / 1000000))
-          if [[ "$m" -gt 0 && ( -z "$mhz" || "$m" -gt "$mhz" ) ]]; then
-            mhz="$m"
-          fi
+        if amd_mhz_to m "$input" && [[ -z "$mhz" || "$m" -gt "$mhz" ]]; then
+          mhz="$m"
         fi
       done
     done
@@ -611,157 +565,70 @@ provider_gpu_amd() {
     VAL_GPU_MHZ="$mhz"
   fi
   # VRAM used/total (bytes already) + power (microwatts -> watts)
-  for d in "$HWMON_ROOT"/*; do
-    [[ -d "$d" ]] || continue
-    local chip
-    chip="$(chip_name_for "$d")"
-    if [[ "$(to_lower "$chip")" != *amdgpu* ]]; then
-      continue
+  for d in "${AMD_DIRS[@]}"; do
+    if [[ "$AMD_VRAM_USED_B" == "null" ]] && read_to raw "$d/mem_info_vram_used" && is_uint "$raw"; then
+      AMD_VRAM_USED_B="$raw"
     fi
-    if [[ "$vram_used" == "null" && -f "$d/mem_info_vram_used" ]]; then
-      if raw="$(read_first_line "$d/mem_info_vram_used" 2>/dev/null)"; then
-        raw="$(trim "$raw")"
-        if is_uint "$raw"; then
-          vram_used="$raw"
-        fi
-      fi
+    if [[ "$AMD_VRAM_TOTAL_B" == "null" ]] && read_to raw "$d/mem_info_vram_total" && is_uint "$raw"; then
+      AMD_VRAM_TOTAL_B="$raw"
     fi
-    if [[ "$vram_total" == "null" && -f "$d/mem_info_vram_total" ]]; then
-      if raw="$(read_first_line "$d/mem_info_vram_total" 2>/dev/null)"; then
-        raw="$(trim "$raw")"
-        if is_uint "$raw"; then
-          vram_total="$raw"
-        fi
-      fi
-    fi
-    if [[ "$watts" == "null" ]]; then
+    if [[ "$AMD_WATTS" == "null" ]]; then
       local pfile=""
       if [[ -f "$d/power1_input" ]]; then
         pfile="$d/power1_input"
       else
-        local cand
-        for cand in "$d"/power*_input; do
-          [[ -e "$cand" ]] || continue
-          pfile="$cand"
-          break
+        for input in "$d"/power*_input; do
+          if [[ -e "$input" ]]; then
+            pfile="$input"
+            break
+          fi
         done
       fi
-      if [[ -n "$pfile" && -f "$pfile" ]]; then
-        if raw="$(read_first_line "$pfile" 2>/dev/null)"; then
-          raw="$(trim "$raw")"
-          if is_uint "$raw"; then
-            watts="$(awk -v uw="$raw" 'BEGIN { printf "%g", uw / 1000000 }')"
-            if ! is_number "$watts"; then
-              watts="null"
-            fi
-          fi
-        fi
+      if [[ -n "$pfile" ]] && read_to raw "$pfile" && is_uint "$raw"; then
+        local tenths=$(((raw + 50000) / 100000))
+        AMD_WATTS="$((tenths / 10)).$((tenths % 10))"
       fi
     fi
   done
-  # stash for gpu_detail assembly
-  AMD_VRAM_USED_B="$vram_used"
-  AMD_VRAM_TOTAL_B="$vram_total"
-  AMD_WATTS="$watts"
 }
-
-# per-reading AMD detail stash (declared here so set -u is happy)
-AMD_VRAM_USED_B="null"
-AMD_VRAM_TOTAL_B="null"
-AMD_WATTS="null"
 
 # ---------------------------------------------------------------------------
 # provider: gpu-intel (summed drm busy_time deltas; primes -> null)
 # ---------------------------------------------------------------------------
 provider_gpu_intel() {
-  VAL_GPU="null"
-  VAL_GPU_TEMP="null"
-  VAL_GPU_MHZ="null"
-  local -a engines=()
-  local b
-  for b in "$DRM_ROOT"/card*/engine/*/busy_time "$DRM_ROOT"/card*/gt*/busy_time; do
-    [[ -f "$b" && -r "$b" ]] || continue
-    engines+=("$b")
-  done
-  if [[ "${#engines[@]}" -eq 0 && -d "$DRM_ROOT" ]]; then
-    while IFS= read -r b; do
-      [[ -n "$b" ]] || continue
-      engines+=("$b")
-    done < <(find "$DRM_ROOT" -name busy_time 2>/dev/null | LC_ALL=C sort || true)
-  fi
-  if [[ "${#engines[@]}" -eq 0 ]]; then
-    return 0
-  fi
+  [[ "${#INTEL_ENGINES[@]}" -gt 0 ]] || return 0
   local total=0 f raw
-  for f in "${engines[@]}"; do
-    if raw="$(read_first_line "$f" 2>/dev/null)"; then
-      raw="$(trim "$raw")"
-      if is_uint "$raw"; then
-        total=$((total + raw))
-      fi
+  for f in "${INTEL_ENGINES[@]}"; do
+    if read_to raw "$f" && is_uint "$raw"; then
+      total=$((total + raw))
     fi
   done
-  local now_ns=""
-  now_ns="$(date +%s%N 2>/dev/null || true)"
-  now_ns="$(trim "$now_ns")"
-  if [[ ! "$now_ns" =~ ^[0-9]+$ ]]; then
-    # date without %N support: fall back to seconds
-    local now_s
-    now_s="$(date +%s 2>/dev/null || true)"
-    if is_uint "$now_s"; then
-      now_ns="$((now_s * 1000000000))"
-    else
-      return 0
-    fi
-  fi
+  now_us
+  local now_ns=$((NOW_US * 1000))
   if [[ -z "$INTEL_PREV_BUSY" || -z "$INTEL_PREV_TIME_NS" ]]; then
     INTEL_PREV_BUSY="$total"
     INTEL_PREV_TIME_NS="$now_ns"
-    VAL_GPU="null"
     return 0
   fi
   local d_busy=$((total - INTEL_PREV_BUSY))
   local d_time=$((now_ns - INTEL_PREV_TIME_NS))
   INTEL_PREV_BUSY="$total"
   INTEL_PREV_TIME_NS="$now_ns"
-  if [[ "$d_time" -le 0 ]]; then
-    VAL_GPU="null"
-    return 0
-  fi
-  if [[ "$d_busy" -lt 0 ]]; then
-    # counter wrap / engine set changed: re-prime
-    VAL_GPU="null"
-    return 0
-  fi
-  local n="${#engines[@]}"
+  # a counter wrap or a changed engine set re-primes
+  [[ "$d_time" -gt 0 && "$d_busy" -ge 0 ]] || return 0
   # busy_time is in nanoseconds; utilization over wall * engine count
-  local pct
-  pct="$(awk -v db="$d_busy" -v dt="$d_time" -v n="$n" 'BEGIN { if (dt*n <= 0) { print "null" } else { printf "%d", (db*100 + dt*n/2) / (dt*n) } }')"
-  if [[ "$pct" == "null" || -z "$pct" ]]; then
-    VAL_GPU="null"
-    return 0
-  fi
-  if [[ "$pct" -lt 0 ]]; then pct=0; fi
+  local span=$((d_time * ${#INTEL_ENGINES[@]}))
+  local pct=$(((d_busy * 100 + span / 2) / span))
   if [[ "$pct" -gt 100 ]]; then pct=100; fi
   VAL_GPU="$pct"
 }
 
 # dispatch to whichever GPU source was picked once at startup
 provider_gpu() {
-  AMD_VRAM_USED_B="null"
-  AMD_VRAM_TOTAL_B="null"
-  AMD_WATTS="null"
-  NVIDIA_UTIL="null"
-  NVIDIA_TEMP="null"
-  NVIDIA_CLOCK="null"
-  NVIDIA_VRAM_USED_B="null"
-  NVIDIA_VRAM_TOTAL_B="null"
-  NVIDIA_WATTS="null"
   case "$GPU_SOURCE" in
     nvidia) provider_gpu_nvidia ;;
     amd) provider_gpu_amd ;;
     intel) provider_gpu_intel ;;
-    *) VAL_GPU="null"; VAL_GPU_TEMP="null"; VAL_GPU_MHZ="null" ;;
   esac
 }
 
@@ -769,34 +636,36 @@ provider_gpu() {
 # provider: clocks (mean CPU clock in MHz; GPU clock comes from GPU providers)
 # ---------------------------------------------------------------------------
 provider_clocks() {
-  VAL_CPU_MHZ="null"
-  local avg=""
-  if [[ -r /proc/cpuinfo ]]; then
-    avg="$(awk '/^cpu MHz/ { n++; s += $4 } END { if (n > 0) printf "%d", (s + n/2) / n }' /proc/cpuinfo 2>/dev/null || true)"
-    avg="$(trim "${avg:-}")"
-  fi
-  if is_uint "$avg" && [[ "$avg" -gt 0 ]]; then
-    VAL_CPU_MHZ="$avg"
-    return 0
-  fi
-  # fallback: sysfs cpufreq (kHz -> MHz mean)
   local sum=0 count=0 f raw
-  for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
-    [[ -f "$f" ]] || continue
-    if raw="$(read_first_line "$f" 2>/dev/null)"; then
-      raw="$(trim "$raw")"
-      if is_uint "$raw" && [[ "$raw" -gt 0 ]]; then
-        sum=$((sum + raw))
-        count=$((count + 1))
-      fi
+  for f in "${FREQ_FILES[@]}"; do
+    if read_to raw "$f" && is_uint "$raw" && [[ "$raw" -gt 0 ]]; then
+      sum=$((sum + raw))
+      count=$((count + 1))
     fi
   done
   if [[ "$count" -gt 0 ]]; then
-    # rounded mean MHz
+    # cpufreq reports kHz: rounded mean MHz
     local mhz=$(((sum + count * 500) / count / 1000))
     if [[ "$mhz" -gt 0 ]]; then
       VAL_CPU_MHZ="$mhz"
     fi
+    return 0
+  fi
+  # no cpufreq: the mean "cpu MHz" of /proc/cpuinfo
+  local -a lines=()
+  lines_to lines /proc/cpuinfo || return 0
+  local line value
+  for line in "${lines[@]}"; do
+    [[ "$line" == "cpu MHz"*:* ]] || continue
+    trim_to value "${line#*:}"
+    value="${value%%.*}"
+    if is_uint "$value"; then
+      sum=$((sum + value))
+      count=$((count + 1))
+    fi
+  done
+  if [[ "$count" -gt 0 ]]; then
+    VAL_CPU_MHZ="$(((sum + count / 2) / count))"
   fi
 }
 
@@ -804,14 +673,8 @@ provider_clocks() {
 # provider: load (from /proc/loadavg)
 # ---------------------------------------------------------------------------
 provider_load() {
-  LOAD_JSON="null"
-  if [[ ! -r /proc/loadavg ]]; then
-    return 0
-  fi
   local one five fifteen
-  if ! read -r one five fifteen _ < /proc/loadavg 2>/dev/null; then
-    return 0
-  fi
+  { read -r one five fifteen _; } 2>/dev/null < /proc/loadavg || return 0
   if is_number "$one" && is_number "$five" && is_number "$fifteen"; then
     LOAD_JSON="{\"one\":$one,\"five\":$five,\"fifteen\":$fifteen}"
   fi
@@ -830,93 +693,88 @@ is_real_iface() {
   esac
 }
 
-# pick_net_iface: choose the non-virtual interface with the most combined
-# rx+tx bytes at startup, same one-shot-decision spirit as pick_gpu_source.
+# pick_net_iface: read the interface the widget asked for when it exists,
+# else the non-virtual one with the most combined rx+tx bytes at startup,
+# the same one-shot decision as pick_gpu_source. /proc/net/dev splits on
+# the colon after the name, which can touch the first counter.
 pick_net_iface() {
   NET_IFACE_DECIDED=1
   NET_IFACE=""
-  [[ -r "$NET_DEV_FILE" ]] || return 0
-  local best="" best_total=-1
-  local line name rest rx tx
-  while IFS= read -r line; do
-    line="$(trim "$line")"
-    [[ "$line" == *:* ]] || continue
-    name="$(trim "${line%%:*}")"
-    [[ -n "$name" ]] || continue
+  local -a lines=()
+  lines_to lines "$NET_DEV_FILE" || return 0
+  local best="" best_total=-1 wanted=0 line name rx tx
+  for line in "${lines[@]}"; do
+    [[ "$line" =~ $NET_LINE_RE ]] || continue
+    name="${BASH_REMATCH[1]}"
+    rx="${BASH_REMATCH[2]}"
+    tx="${BASH_REMATCH[4]}"
+    if [[ "$name" == "$NET_IFACE_WANTED" ]]; then
+      wanted=1
+    fi
     is_real_iface "$name" || continue
-    rest="${line#*:}"
-    read -r rx _ _ _ _ _ _ _ tx _ <<< "$rest"
-    is_uint "$rx" || continue
-    is_uint "$tx" || continue
-    local total=$((rx + tx))
-    if [[ "$total" -gt "$best_total" ]]; then
-      best_total="$total"
+    if [[ $((rx + tx)) -gt "$best_total" ]]; then
+      best_total=$((rx + tx))
       best="$name"
     fi
-  done < "$NET_DEV_FILE"
-  NET_IFACE="$best"
+  done
+  if [[ "$wanted" -eq 1 ]]; then
+    NET_IFACE="$NET_IFACE_WANTED"
+  else
+    NET_IFACE="$best"
+  fi
 }
 
 provider_net() {
-  VAL_NET_DOWN="null"
-  VAL_NET_UP="null"
   if [[ "$NET_IFACE_DECIDED" -eq 0 ]]; then
     pick_net_iface
   fi
-  if [[ -z "$NET_IFACE" || ! -r "$NET_DEV_FILE" ]]; then
-    return 0
-  fi
-  local line name rest rx tx found=0
-  while IFS= read -r line; do
-    line="$(trim "$line")"
-    [[ "$line" == *:* ]] || continue
-    name="$(trim "${line%%:*}")"
-    [[ "$name" == "$NET_IFACE" ]] || continue
-    rest="${line#*:}"
-    read -r rx _ _ _ _ _ _ _ tx _ <<< "$rest"
-    found=1
-    break
-  done < "$NET_DEV_FILE"
-  if [[ "$found" -eq 0 ]] || ! is_uint "$rx" || ! is_uint "$tx"; then
-    return 0
-  fi
-  local now_ns=""
-  now_ns="$(date +%s%N 2>/dev/null || true)"
-  now_ns="$(trim "$now_ns")"
-  if [[ ! "$now_ns" =~ ^[0-9]+$ ]]; then
-    local now_s
-    now_s="$(date +%s 2>/dev/null || true)"
-    if is_uint "$now_s"; then
-      now_ns="$((now_s * 1000000000))"
-    else
-      return 0
+  [[ -n "$NET_IFACE" ]] || return 0
+  local -a lines=()
+  lines_to lines "$NET_DEV_FILE" || return 0
+  # One pass: the counters of the chosen interface, and every interface
+  # the menu can offer (the real ones, plus the chosen one if virtual).
+  local line name cur_rx="" cur_tx="" list="" quoted
+  for line in "${lines[@]}"; do
+    [[ "$line" =~ $NET_LINE_RE ]] || continue
+    name="${BASH_REMATCH[1]}"
+    if [[ "$name" == "$NET_IFACE" ]]; then
+      cur_rx="${BASH_REMATCH[2]}"
+      cur_tx="${BASH_REMATCH[4]}"
     fi
-  fi
-  if [[ -z "$NET_PREV_RX" || -z "$NET_PREV_TX" || -z "$NET_PREV_TIME_NS" ]]; then
-    NET_PREV_RX="$rx"
-    NET_PREV_TX="$tx"
-    NET_PREV_TIME_NS="$now_ns"
+    if is_real_iface "$name" || [[ "$name" == "$NET_IFACE" ]]; then
+      quote_to quoted "$name"
+      list+="${list:+,}$quoted"
+    fi
+  done
+  NET_IFACES_JSON="[$list]"
+  [[ -n "$cur_rx" ]] || return 0
+  now_us
+  if [[ -z "$NET_PREV_RX" || -z "$NET_PREV_TX" || -z "$NET_PREV_TIME_US" ]]; then
+    NET_PREV_RX="$cur_rx"
+    NET_PREV_TX="$cur_tx"
+    NET_PREV_TIME_US="$NOW_US"
     return 0
   fi
-  local d_rx=$((rx - NET_PREV_RX))
-  local d_tx=$((tx - NET_PREV_TX))
-  local d_time=$((now_ns - NET_PREV_TIME_NS))
-  NET_PREV_RX="$rx"
-  NET_PREV_TX="$tx"
-  NET_PREV_TIME_NS="$now_ns"
+  local d_rx=$((cur_rx - NET_PREV_RX))
+  local d_tx=$((cur_tx - NET_PREV_TX))
+  local d_time=$((NOW_US - NET_PREV_TIME_US))
+  NET_PREV_RX="$cur_rx"
+  NET_PREV_TX="$cur_tx"
+  NET_PREV_TIME_US="$NOW_US"
   if [[ "$d_time" -le 0 || "$d_rx" -lt 0 || "$d_tx" -lt 0 ]]; then
     return 0
   fi
-  VAL_NET_DOWN="$(awk -v db="$d_rx" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
-  VAL_NET_UP="$(awk -v db="$d_tx" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
+  VAL_NET_DOWN=$((d_rx * 1000000 / d_time))
+  VAL_NET_UP=$((d_tx * 1000000 / d_time))
 }
 
 assemble_net() {
   if [[ -z "$NET_IFACE" ]]; then
-    NET_JSON="null"
     return 0
   fi
-  NET_JSON="{\"iface\":$(json_quote "$NET_IFACE"),\"down_bps\":$VAL_NET_DOWN,\"up_bps\":$VAL_NET_UP}"
+  local iface
+  quote_to iface "$NET_IFACE"
+  NET_JSON="{\"iface\":$iface,\"ifaces\":$NET_IFACES_JSON,\"down_bps\":$VAL_NET_DOWN,\"up_bps\":$VAL_NET_UP}"
 }
 
 # ---------------------------------------------------------------------------
@@ -941,16 +799,24 @@ is_whole_disk() {
 }
 
 # Disk usage has no /proc or /sys equivalent to statvfs(2) — stat(1) is the
-# thinnest wrapper around the same syscall this project already trusts
-# coreutils for elsewhere (date, sort). %b/%a are block counts, so the
-# block size itself cancels out of the ratio.
+# thinnest wrapper around it, and the one process a disk reading forks.
+# disk_stat_to <var> <path>: "blocks avail block_size", or a failure.
+disk_stat_to() {
+  local __out=""
+  __out="$(stat -f -c '%b %a %S' "$2" 2>/dev/null)" || return 1
+  [[ -n "$__out" ]] || return 1
+  printf -v "$1" '%s' "$__out"
+}
+
 provider_disk_usage() {
-  VAL_DISK_USED_PCT="null"
   local out=""
-  out="$(stat -f -c '%b %a' "$ROOT_MOUNT" 2>/dev/null || true)"
-  [[ -n "$(trim "$out")" ]] || return 0
-  local blocks avail
-  read -r blocks avail <<< "$out"
+  if ! disk_stat_to out "$DISK_MOUNT"; then
+    # A mount the widget asked for can be gone (an unplugged drive).
+    DISK_MOUNT="/"
+    disk_stat_to out "/" || return 0
+  fi
+  local blocks avail size
+  read -r blocks avail size <<< "$out"
   is_uint "$blocks" || return 0
   is_uint "$avail" || return 0
   [[ "$blocks" -gt 0 ]] || return 0
@@ -959,65 +825,74 @@ provider_disk_usage() {
     used=0
   fi
   VAL_DISK_USED_PCT="$(((used * 100 + blocks / 2) / blocks))"
+  if is_uint "$size"; then
+    VAL_DISK_USED_B="$((used * size))"
+    VAL_DISK_TOTAL_B="$((blocks * size))"
+  fi
 }
 
 provider_disk_io() {
-  VAL_DISK_READ="null"
-  VAL_DISK_WRITE="null"
-  if [[ ! -r "$DISKSTATS_PATH" ]]; then
-    return 0
-  fi
-  local total_read=0 total_write=0
-  local line name f4 f5 f6 f7 f8 f9 f10
-  while IFS= read -r line; do
-    line="$(trim "$line")"
-    [[ -n "$line" ]] || continue
-    read -r _ _ name f4 f5 f6 f7 f8 f9 f10 _ <<< "$line"
-    is_whole_disk "$name" || continue
-    is_uint "$f6" || continue
-    is_uint "$f10" || continue
-    total_read=$((total_read + f6))
-    total_write=$((total_write + f10))
-  done < "$DISKSTATS_PATH"
-  local now_ns=""
-  now_ns="$(date +%s%N 2>/dev/null || true)"
-  now_ns="$(trim "$now_ns")"
-  if [[ ! "$now_ns" =~ ^[0-9]+$ ]]; then
-    local now_s
-    now_s="$(date +%s 2>/dev/null || true)"
-    if is_uint "$now_s"; then
-      now_ns="$((now_s * 1000000000))"
-    else
-      return 0
-    fi
-  fi
+  local -a lines=()
+  lines_to lines "$DISKSTATS_PATH" || return 0
+  local total_read=0 total_write=0 line
+  for line in "${lines[@]}"; do
+    [[ "$line" =~ $DISK_LINE_RE ]] || continue
+    is_whole_disk "${BASH_REMATCH[1]}" || continue
+    total_read=$((total_read + BASH_REMATCH[2]))
+    total_write=$((total_write + BASH_REMATCH[4]))
+  done
+  now_us
   local cur_read=$((total_read * 512))
   local cur_write=$((total_write * 512))
-  if [[ -z "$DISK_PREV_READ" || -z "$DISK_PREV_WRITE" || -z "$DISK_PREV_TIME_NS" ]]; then
+  if [[ -z "$DISK_PREV_READ" || -z "$DISK_PREV_WRITE" || -z "$DISK_PREV_TIME_US" ]]; then
     DISK_PREV_READ="$cur_read"
     DISK_PREV_WRITE="$cur_write"
-    DISK_PREV_TIME_NS="$now_ns"
+    DISK_PREV_TIME_US="$NOW_US"
     return 0
   fi
   local d_read=$((cur_read - DISK_PREV_READ))
   local d_write=$((cur_write - DISK_PREV_WRITE))
-  local d_time=$((now_ns - DISK_PREV_TIME_NS))
+  local d_time=$((NOW_US - DISK_PREV_TIME_US))
   DISK_PREV_READ="$cur_read"
   DISK_PREV_WRITE="$cur_write"
-  DISK_PREV_TIME_NS="$now_ns"
+  DISK_PREV_TIME_US="$NOW_US"
   if [[ "$d_time" -le 0 || "$d_read" -lt 0 || "$d_write" -lt 0 ]]; then
     return 0
   fi
-  VAL_DISK_READ="$(awk -v db="$d_read" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
-  VAL_DISK_WRITE="$(awk -v db="$d_write" -v dt="$d_time" 'BEGIN { printf "%d", db*1000000000/dt }')"
+  VAL_DISK_READ=$((d_read * 1000000 / d_time))
+  VAL_DISK_WRITE=$((d_write * 1000000 / d_time))
+}
+
+# disk_mounts: the real filesystems the disk read-out can follow, one
+# mount point per device, so btrfs subvolumes don't list one disk thrice.
+disk_mounts() {
+  local -a lines=()
+  local list="" seen=" " line dev mp quoted
+  lines_to lines "$MOUNTS_FILE" || true
+  for line in "${lines[@]}"; do
+    # device, mount point, type; /proc/mounts escapes a space as \040.
+    [[ "$line" =~ ^([^ ]+)\ ([^ ]+)\ ([^ ]+)\  ]] || continue
+    case "${BASH_REMATCH[3]}" in
+      ext2|ext3|ext4|btrfs|xfs|vfat|exfat|ntfs|ntfs3|f2fs|zfs|bcachefs|jfs|fuseblk) ;;
+      *) continue ;;
+    esac
+    dev="${BASH_REMATCH[1]}"
+    [[ "$seen" == *" $dev "* ]] && continue
+    seen+="$dev "
+    printf -v mp '%b' "${BASH_REMATCH[2]}"
+    quote_to quoted "$mp"
+    list+="${list:+,}$quoted"
+  done
+  DISK_MOUNTS_JSON="[$list]"
 }
 
 assemble_disk() {
   if [[ "$VAL_DISK_USED_PCT" == "null" && "$VAL_DISK_READ" == "null" && "$VAL_DISK_WRITE" == "null" ]]; then
-    DISK_JSON="null"
-  else
-    DISK_JSON="{\"mount\":$(json_quote "$ROOT_MOUNT"),\"used_pct\":$VAL_DISK_USED_PCT,\"read_bps\":$VAL_DISK_READ,\"write_bps\":$VAL_DISK_WRITE}"
+    return 0
   fi
+  local mount
+  quote_to mount "$DISK_MOUNT"
+  DISK_JSON="{\"mount\":$mount,\"mounts\":$DISK_MOUNTS_JSON,\"used_pct\":$VAL_DISK_USED_PCT,\"used_b\":$VAL_DISK_USED_B,\"total_b\":$VAL_DISK_TOTAL_B,\"read_bps\":$VAL_DISK_READ,\"write_bps\":$VAL_DISK_WRITE}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1036,13 +911,8 @@ assemble_gpu_detail() {
       total="$AMD_VRAM_TOTAL_B"
       watts="$AMD_WATTS"
       ;;
-    *)
-      used="null"; total="null"; watts="null"
-      ;;
   esac
-  if [[ "$used" == "null" && "$total" == "null" && "$watts" == "null" ]]; then
-    GPU_DETAIL_JSON="null"
-  else
+  if [[ "$used" != "null" || "$total" != "null" || "$watts" != "null" ]]; then
     GPU_DETAIL_JSON="{\"vram_used_b\":$used,\"vram_total_b\":$total,\"watts\":$watts}"
   fi
 }
@@ -1051,23 +921,32 @@ assemble_gpu_detail() {
 # Emit one JSON line
 # ---------------------------------------------------------------------------
 emit_reading() {
-  provider_cpu_info_once
-  provider_cpu_usage
-  provider_memory
-  provider_hwmon_temp
-  provider_fans
-  provider_gpu
-  provider_clocks
-  provider_load
-  provider_net
-  provider_disk_usage
-  provider_disk_io
-  assemble_gpu_detail
-  assemble_net
+  READINGS=$((READINGS + 1))
+  if [[ $((READINGS % RESCAN_EVERY)) -eq 0 ]]; then
+    scan_sensors
+    if [[ "$GPU_SOURCE" == "intel" ]]; then
+      scan_intel_engines
+    fi
+  fi
+  reset_reading
+  if wants cpu; then provider_cpu_usage; fi
+  if wants mem; then provider_memory; fi
+  if wants temp; then provider_hwmon_temp; fi
+  if wants fans; then provider_fans; fi
+  if wants gpu; then provider_gpu; assemble_gpu_detail; fi
+  if wants clocks; then provider_clocks; fi
+  if wants load; then provider_load; fi
+  if wants net; then provider_net; assemble_net; fi
+  if wants disk; then provider_disk_usage; fi
+  if wants io; then provider_disk_io; fi
+  if wants mounts; then disk_mounts; fi
   assemble_disk
-  # cpu_model / cores already cached by provider_cpu_info_once
-  printf '{"schema":2,"cpu":%s,"temp":%s,"mem":%s,"gpu":%s,"gpu_temp":%s,"fans":%s,"cpu_mhz":%s,"gpu_mhz":%s,"mem_used_kib":%s,"mem_total_kib":%s,"swap_used_kib":%s,"swap_total_kib":%s,"cpu_model":%s,"cpu_cores":%s,"load":%s,"gpu_detail":%s,"net":%s,"disk":%s}\n' \
-    "$VAL_CPU" "$VAL_TEMP" "$VAL_MEM" "$VAL_GPU" "$VAL_GPU_TEMP" "$FANS_JSON" \
+  local gpu_source="null"
+  if [[ "$GPU_SOURCE" != "none" && "$GPU_SOURCE" != "undecided" ]]; then
+    gpu_source="\"$GPU_SOURCE\""
+  fi
+  printf '{"schema":2,"cpu":%s,"temp":%s,"mem":%s,"gpu":%s,"gpu_temp":%s,"gpu_source":%s,"gpu_sources":%s,"fans":%s,"cpu_mhz":%s,"gpu_mhz":%s,"mem_used_kib":%s,"mem_total_kib":%s,"swap_used_kib":%s,"swap_total_kib":%s,"cpu_model":%s,"cpu_cores":%s,"load":%s,"gpu_detail":%s,"net":%s,"disk":%s}\n' \
+    "$VAL_CPU" "$VAL_TEMP" "$VAL_MEM" "$VAL_GPU" "$VAL_GPU_TEMP" "$gpu_source" "$GPU_SOURCES_JSON" "$FANS_JSON" \
     "$VAL_CPU_MHZ" "$VAL_GPU_MHZ" "$VAL_MEM_USED" "$VAL_MEM_TOTAL" \
     "$VAL_SWAP_USED" "$VAL_SWAP_TOTAL" "$VAL_CPU_MODEL_JSON" "$VAL_CPU_CORES" \
     "$LOAD_JSON" "$GPU_DETAIL_JSON" "$NET_JSON" "$DISK_JSON"
@@ -1084,27 +963,13 @@ main() {
     mode="once"
   elif [[ "${1:-}" == "--loop" ]]; then
     mode="loop"
-    if [[ "${2:-}" != "--interval" || -z "${3:-}" ]]; then
+    if [[ "${2:-}" != "--interval" || -z "${3:-}" || "$#" -gt 3 ]]; then
       usage
       return 1
     fi
     interval="$3"
-    if [[ "$interval" =~ ^[0-9]+$ ]]; then
-      if [[ "$interval" -le 0 ]]; then
-        echo "sysread: interval must be a positive number" >&2
-        return 1
-      fi
-    elif is_number "$interval"; then
-      if ! awk -v v="$interval" 'BEGIN { exit !(v > 0) }'; then
-        echo "sysread: interval must be a positive number" >&2
-        return 1
-      fi
-    else
+    if ! is_number "$interval" || [[ "$interval" =~ ^[+-]?0*\.?0*$ || "$interval" == -* ]]; then
       echo "sysread: interval must be a positive number" >&2
-      return 1
-    fi
-    if [[ "$#" -gt 3 ]]; then
-      usage
       return 1
     fi
   else
@@ -1112,23 +977,27 @@ main() {
     return 1
   fi
 
+  scan_sensors
+  scan_intel_engines
   pick_gpu_source
   provider_cpu_info_once
 
   if [[ "$mode" == "once" ]]; then
     # Prime percentage/rate functions, wait ~0.2 s, then report real deltas.
-    provider_cpu_usage
-    if [[ "$GPU_SOURCE" == "intel" ]]; then
-      provider_gpu_intel
-    fi
-    provider_net
-    provider_disk_io
+    if wants cpu; then provider_cpu_usage; fi
+    if wants gpu && [[ "$GPU_SOURCE" == "intel" ]]; then provider_gpu_intel; fi
+    if wants net; then provider_net; fi
+    if wants io; then provider_disk_io; fi
     sleep 0.2
     emit_reading
   else
+    # A pipe nobody writes to: `read -t` on it waits out the interval
+    # without forking a `sleep` for every reading.
+    local tick
+    exec {tick}<> <(:)
     while true; do
       emit_reading
-      sleep "$interval"
+      read -r -t "$interval" -u "$tick" _ || true
     done
   fi
 }

@@ -12,10 +12,7 @@ function tooltipNum(v) {
     return null;
   }
   if (typeof v === "number") {
-    if (isFinite(v)) {
-      return v;
-    }
-    return null;
+    return isFinite(v) ? v : null;
   }
   if (typeof v === "string") {
     var t = v.replace(/^\s+|\s+$/g, "");
@@ -23,26 +20,17 @@ function tooltipNum(v) {
       return null;
     }
     var n = Number(t);
-    if (isFinite(n)) {
-      return n;
-    }
-    return null;
+    return isFinite(n) ? n : null;
   }
   return null;
 }
 
 function tooltipStr(v) {
-  if (v === null || v === undefined) {
+  if (typeof v !== "string") {
     return null;
   }
-  if (typeof v === "string") {
-    var t = v.replace(/^\s+|\s+$/g, "");
-    if (t === "") {
-      return null;
-    }
-    return t;
-  }
-  return null;
+  var t = v.replace(/^\s+|\s+$/g, "");
+  return t === "" ? null : t;
 }
 
 function tooltipGib(gib) {
@@ -54,8 +42,7 @@ function tooltipGib(gib) {
     n = 0;
   }
   if (n < 10) {
-    var r = Math.round(n * 10) / 10;
-    return r.toFixed(1);
+    return (Math.round(n * 10) / 10).toFixed(1);
   }
   return String(Math.round(n));
 }
@@ -66,8 +53,7 @@ function tooltipClockLong(mhz) {
     return null;
   }
   if (n >= 1000) {
-    var r = Math.round(n / 1000 * 10) / 10;
-    return r.toFixed(1) + " GHz";
+    return (Math.round(n / 1000 * 10) / 10).toFixed(1) + " GHz";
   }
   return String(Math.round(n)) + " MHz";
 }
@@ -92,63 +78,23 @@ function tooltipHeadline(metric) {
     return "";
   }
   var label = tooltipStr(metric.label) || tooltipStr(metric.key) || "Metric";
-  var value = tooltipStr(metric.value);
-  if (value === null) {
-    if (tooltipStr(metric.bar) !== null) {
-      value = tooltipStr(metric.bar);
-    } else {
-      value = "—";
-    }
-  }
+  var value = tooltipStr(metric.value) || tooltipStr(metric.bar) || "—";
   return label + ": " + value;
 }
 
-function tooltipCpuDetails(metric, reading) {
+function tooltipReading(reading) {
+  return (reading && typeof reading === "object" && !tooltipIsArray(reading)) ? reading : {};
+}
+
+// Detail lines per device. `shown` holds the metric kinds the cell
+// already headlines, so a detail never repeats a headline.
+function tooltipCpuDetails(first, reading, shown) {
+  var r = tooltipReading(reading);
   var lines = [];
-  var model = null;
-  var cores = null;
-  var one = null;
-  var five = null;
-  var fifteen = null;
-  var mhz = null;
-  if (metric && typeof metric === "object") {
-    model = tooltipStr(metric.cpuModel);
-    if (model === null) {
-      model = tooltipStr(metric.cpu_model);
-    }
-    cores = tooltipNum(metric.cpuCores);
-    if (cores === null) {
-      cores = tooltipNum(metric.cpu_cores);
-    }
-    one = tooltipNum(metric.loadOne);
-    five = tooltipNum(metric.loadFive);
-    fifteen = tooltipNum(metric.loadFifteen);
-    mhz = tooltipNum(metric.mhz);
-    if (mhz === null) {
-      mhz = tooltipNum(metric.cpu_mhz);
-    }
-  }
-  if (reading && typeof reading === "object" && !tooltipIsArray((reading))) {
-    if (model === null) {
-      model = tooltipStr(reading.cpu_model);
-    }
-    if (cores === null) {
-      cores = tooltipNum(reading.cpu_cores);
-    }
-    if (reading.load && typeof reading.load === "object") {
-      if (one === null) {
-        one = tooltipNum(reading.load.one);
-      }
-      if (five === null) {
-        five = tooltipNum(reading.load.five);
-      }
-      if (fifteen === null) {
-        fifteen = tooltipNum(reading.load.fifteen);
-      }
-    }
-    if (mhz === null) {
-      mhz = tooltipNum(reading.cpu_mhz);
-    }
+  var model = tooltipStr(first.cpuModel) || tooltipStr(r.cpu_model);
+  var cores = tooltipNum(first.cpuCores);
+  if (cores === null) {
+    cores = tooltipNum(r.cpu_cores);
   }
   if (model !== null && cores !== null) {
     lines.push(model + " · " + String(Math.round(cores)) + " cores");
@@ -157,176 +103,73 @@ function tooltipCpuDetails(metric, reading) {
   } else if (cores !== null) {
     lines.push(String(Math.round(cores)) + " cores");
   }
-  if (one !== null || five !== null || fifteen !== null) {
-    var parts = [];
-    if (one !== null) {
-      parts.push(one.toFixed(2));
-    }
-    if (five !== null) {
-      parts.push(five.toFixed(2));
-    }
-    if (fifteen !== null) {
-      parts.push(fifteen.toFixed(2));
-    }
+  if (!shown.avg && r.load && typeof r.load === "object") {
+    var parts = [r.load.one, r.load.five, r.load.fifteen]
+      .map(tooltipNum)
+      .filter(function (v) { return v !== null; })
+      .map(function (v) { return v.toFixed(2); });
     if (parts.length > 0) {
       lines.push("Load " + parts.join(" "));
     }
   }
+  var mhz = tooltipNum(first.mhz);
+  if (mhz === null) {
+    mhz = tooltipNum(r.cpu_mhz);
+  }
   var clock = tooltipClockLong(mhz);
-  if (clock !== null) {
+  if (clock !== null && !(shown.usage && first.clock)) {
     lines.push(clock);
   }
   return lines;
 }
 
-function tooltipGpuDetails(metric, reading) {
+function tooltipGpuDetails(first, reading, shown) {
+  var r = tooltipReading(reading);
+  var detail = (r.gpu_detail && typeof r.gpu_detail === "object") ? r.gpu_detail : {};
   var lines = [];
-  var used = null;
-  var total = null;
-  var watts = null;
-  var mhz = null;
-  if (metric && typeof metric === "object") {
-    used = tooltipNum(metric.vramUsedB);
-    if (used === null) {
-      used = tooltipNum(metric.vram_used_b);
-    }
-    total = tooltipNum(metric.vramTotalB);
-    if (total === null) {
-      total = tooltipNum(metric.vram_total_b);
-    }
-    watts = tooltipNum(metric.watts);
-    mhz = tooltipNum(metric.mhz);
-    if (mhz === null) {
-      mhz = tooltipNum(metric.gpu_mhz);
-    }
+  var source = tooltipStr(r.gpu_source);
+  if (source !== null) {
+    lines.push("Source " + source);
   }
-  if (reading && typeof reading === "object" && !tooltipIsArray((reading))) {
-    if (reading.gpu_detail && typeof reading.gpu_detail === "object") {
-      if (used === null) {
-        used = tooltipNum(reading.gpu_detail.vram_used_b);
-      }
-      if (total === null) {
-        total = tooltipNum(reading.gpu_detail.vram_total_b);
-      }
-      if (watts === null) {
-        watts = tooltipNum(reading.gpu_detail.watts);
-      }
-    }
-    if (mhz === null) {
-      mhz = tooltipNum(reading.gpu_mhz);
-    }
+  var used = tooltipNum(detail.vram_used_b);
+  var total = tooltipNum(detail.vram_total_b);
+  if (!shown.vram && used !== null && total !== null && total > 0) {
+    lines.push("VRAM " + tooltipGib(used / 1073741824) + "/" + tooltipGib(total / 1073741824) + " GiB");
   }
-  if (used !== null && total !== null && total > 0) {
-    var ug = tooltipGib(used / 1073741824);
-    var tg = tooltipGib(total / 1073741824);
-    if (ug !== null && tg !== null) {
-      lines.push("VRAM " + ug + "/" + tg + " GiB");
-    }
-  } else if (used !== null) {
-    var uo = tooltipGib(used / 1073741824);
-    if (uo !== null) {
-      lines.push("VRAM " + uo + " GiB");
-    }
-  } else if (total !== null) {
-    var to = tooltipGib(total / 1073741824);
-    if (to !== null) {
-      lines.push("VRAM " + to + " GiB total");
-    }
+  var watts = tooltipWatts(detail.watts);
+  if (!shown.power && watts !== null) {
+    lines.push(watts);
   }
-  var wstr = tooltipWatts(watts);
-  if (wstr !== null) {
-    lines.push(wstr);
-  }
-  var clock = tooltipClockLong(mhz);
-  if (clock !== null) {
+  var clock = tooltipClockLong(r.gpu_mhz);
+  if (clock !== null && !(shown.usage && first.clock)) {
     lines.push(clock);
   }
   return lines;
 }
 
-function tooltipMemDetails(metric, reading, opts) {
+function tooltipMemDetails(first, reading, shown) {
+  var r = tooltipReading(reading);
   var lines = [];
-  var ramFormat = "percent";
-  if (opts && opts.ramFormat === "used") {
-    ramFormat = "used";
-  } else if (metric && metric.ramFormat === "used") {
-    ramFormat = "used";
-  } else if (reading && reading.ramFormat === "used") {
-    ramFormat = "used";
+  var su = tooltipNum(r.swap_used_kib);
+  var st = tooltipNum(r.swap_total_kib);
+  if (!shown.swap && st !== null && st > 0) {
+    lines.push("Swap " + tooltipGib(su !== null && su > 0 ? su / 1048576 : 0) + "/" + tooltipGib(st / 1048576) + " GiB");
   }
-  var percent = null;
-  var usedKib = null;
-  var totalKib = null;
-  var swapUsed = null;
-  var swapTotal = null;
-  if (metric && typeof metric === "object") {
-    percent = tooltipNum(metric.percent);
-    if (percent === null) {
-      percent = tooltipNum(metric.mem);
-    }
-    usedKib = tooltipNum(metric.memUsedKib);
-    if (usedKib === null) {
-      usedKib = tooltipNum(metric.mem_used_kib);
-    }
-    totalKib = tooltipNum(metric.memTotalKib);
-    if (totalKib === null) {
-      totalKib = tooltipNum(metric.mem_total_kib);
-    }
-    swapUsed = tooltipNum(metric.swapUsedKib);
-    if (swapUsed === null) {
-      swapUsed = tooltipNum(metric.swap_used_kib);
-    }
-    swapTotal = tooltipNum(metric.swapTotalKib);
-    if (swapTotal === null) {
-      swapTotal = tooltipNum(metric.swap_total_kib);
-    }
+  return lines;
+}
+
+function tooltipNetDetails(first) {
+  var iface = tooltipStr(first.iface);
+  return iface !== null ? ["Interface " + iface] : [];
+}
+
+function tooltipDiskDetails(first) {
+  var lines = [];
+  var mount = tooltipStr(first.mount);
+  if (mount !== null) {
+    lines.push("Mount " + mount);
   }
-  if (reading && typeof reading === "object" && !tooltipIsArray((reading))) {
-    if (percent === null) {
-      percent = tooltipNum(reading.mem);
-    }
-    if (usedKib === null) {
-      usedKib = tooltipNum(reading.mem_used_kib);
-    }
-    if (totalKib === null) {
-      totalKib = tooltipNum(reading.mem_total_kib);
-    }
-    if (swapUsed === null) {
-      swapUsed = tooltipNum(reading.swap_used_kib);
-    }
-    if (swapTotal === null) {
-      swapTotal = tooltipNum(reading.swap_total_kib);
-    }
-    if (ramFormat === "percent" && reading.ramFormat === "used") {
-      ramFormat = "used";
-    }
-  }
-  // Show whichever format the headline is not.
-  if (ramFormat === "used") {
-    if (percent !== null) {
-      lines.push(String(Math.round(percent)) + " %");
-    }
-  } else {
-    if (usedKib !== null && totalKib !== null && totalKib > 0) {
-      var ug = tooltipGib(usedKib / 1048576);
-      var tg = tooltipGib(totalKib / 1048576);
-      if (ug !== null && tg !== null) {
-        lines.push(ug + "/" + tg + " GiB");
-      }
-    }
-  }
-  if (swapTotal !== null && swapTotal > 0) {
-    var su = 0;
-    if (swapUsed !== null && swapUsed >= 0) {
-      su = swapUsed / 1048576;
-    }
-    var st = swapTotal / 1048576;
-    var sus = tooltipGib(su);
-    var sts = tooltipGib(st);
-    if (sus !== null && sts !== null) {
-      lines.push("Swap " + sus + "/" + sts + " GiB");
-    }
-  }
+  lines.push("Read and write count every physical disk");
   return lines;
 }
 
@@ -334,127 +177,55 @@ function tooltipDeviceOf(metric) {
   if (metric && typeof metric.device === "string") {
     return metric.device;
   }
-  if (metric && typeof metric.key === "string") {
-    if (metric.key.indexOf("cpu_") === 0) {
-      return "cpu";
-    }
-    if (metric.key.indexOf("gpu_") === 0) {
-      return "gpu";
-    }
-    if (metric.key.indexOf("mem") === 0) {
-      return "mem";
-    }
-    if (metric.key.indexOf("fan:") === 0) {
-      return "fan";
-    }
-  }
   return "";
 }
 
-// One metric tooltip: headline first, then detail lines. Nulls skipped.
-function tooltip(metric, reading, opts) {
-  if (!metric || typeof metric !== "object") {
+// A tooltip for a list of metrics from one group: every headline first,
+// then that group's detail lines once. Nulls are skipped silently.
+function tooltipCell(metrics, device, reading) {
+  var list = tooltipIsArray(metrics) ? metrics.filter(function (m) { return m && typeof m === "object"; }) : [];
+  if (list.length === 0) {
     return "";
   }
   var lines = [];
-  lines.push(tooltipHeadline(metric));
-  var dev = tooltipDeviceOf(metric);
-  var extra = [];
-  if (dev === "cpu") {
-    extra = tooltipCpuDetails(metric, reading);
-  } else if (dev === "gpu") {
-    extra = tooltipGpuDetails(metric, reading);
-  } else if (dev === "mem") {
-    extra = tooltipMemDetails(metric, reading, opts);
-  }
+  var shown = {};
   var i = 0;
+  for (i = 0; i < list.length; i++) {
+    lines.push(tooltipHeadline(list[i]));
+    shown[list[i].kind] = true;
+  }
+  var extra = [];
+  if (device === "cpu") {
+    extra = tooltipCpuDetails(list[0], reading, shown);
+  } else if (device === "gpu") {
+    extra = tooltipGpuDetails(list[0], reading, shown);
+  } else if (device === "mem") {
+    extra = tooltipMemDetails(list[0], reading, shown);
+  } else if (device === "net") {
+    extra = tooltipNetDetails(list[0]);
+  } else if (device === "disk") {
+    extra = tooltipDiskDetails(list[0]);
+  }
   for (i = 0; i < extra.length; i++) {
-    if (extra[i] !== null && extra[i] !== undefined && extra[i] !== "") {
+    if (extra[i] && lines.indexOf(extra[i]) < 0) {
       lines.push(extra[i]);
     }
   }
   return lines.join("\n");
 }
 
-// Joined usage plus temp tooltip: both headlines, then one detail block.
-function tooltipJoined(usage, temp, reading, opts) {
-  var lines = [];
-  if (usage && typeof usage === "object") {
-    lines.push(tooltipHeadline(usage));
-  }
-  if (temp && typeof temp === "object") {
-    lines.push(tooltipHeadline(temp));
-  }
-  if (lines.length === 0) {
-    return "";
-  }
-  var first = null;
-  if (usage && typeof usage === "object") {
-    first = usage;
-  } else {
-    first = temp;
-  }
-  var dev = tooltipDeviceOf(first);
-  var extra = [];
-  if (dev === "cpu") {
-    extra = tooltipCpuDetails(first, reading);
-    if (extra.length === 0 && temp && temp !== first) {
-      extra = tooltipCpuDetails(temp, reading);
-    }
-    if (reading && extra.length === 0) {
-      var both = tooltipCpuDetails(usage, reading);
-      var j = 0;
-      for (j = 0; j < both.length; j++) {
-        extra.push(both[j]);
-      }
-    }
-  } else if (dev === "gpu") {
-    // Merge VRAM style details from both halves without duplicating.
-    var seen = {};
-    var a = tooltipGpuDetails(usage, reading);
-    var b = tooltipGpuDetails(temp, reading);
-    var k = 0;
-    for (k = 0; k < a.length; k++) {
-      if (!seen[a[k]]) {
-        extra.push(a[k]);
-        seen[a[k]] = true;
-      }
-    }
-    for (k = 0; k < b.length; k++) {
-      if (!seen[b[k]]) {
-        extra.push(b[k]);
-        seen[b[k]] = true;
-      }
-    }
-  } else if (dev === "mem") {
-    extra = tooltipMemDetails(first, reading, opts);
-  }
-  var i = 0;
-  for (i = 0; i < extra.length; i++) {
-    if (extra[i] !== null && extra[i] !== undefined && extra[i] !== "") {
-      lines.push(extra[i]);
-    }
-  }
-  return lines.join("\n");
+// One metric's tooltip: its headline, then its group's detail lines.
+function tooltip(metric, reading) {
+  return tooltipCell([metric], tooltipDeviceOf(metric), reading);
 }
 
-// Tooltip for a strip cell. Reading supplies live details when the
-// metric alone does not carry them. Opts may hold ramFormat and unit.
-function tooltipFor(cell, reading, opts) {
-  if (!cell || typeof cell !== "object") {
+// Tooltip for a strip cell, from every metric it draws.
+function tooltipFor(cell, reading) {
+  if (!cell || typeof cell !== "object" || !tooltipIsArray(cell.metrics)) {
     return "";
   }
-  if (cell.cell === "joined") {
-    return tooltipJoined(cell.usage, cell.temp, reading, opts);
+  if (cell.key === "placeholder") {
+    return "No metrics visible";
   }
-  if (cell.cell === "gauge" || cell.cell === "metric") {
-    if (cell.metric && typeof cell.metric === "object") {
-      if (cell.metric.key === "placeholder") {
-        return "No metrics visible";
-      }
-      return tooltip(cell.metric, reading, opts);
-    }
-    return "";
-  }
-  return "";
+  return tooltipCell(cell.metrics, cell.device, reading);
 }

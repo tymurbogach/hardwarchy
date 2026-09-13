@@ -1,4 +1,5 @@
-// A vertical usage gauge: a capsule that fills from the bottom.
+// A vertical usage gauge: a capsule that fills from the bottom, sized by
+// whoever places it (7x14 when nobody does).
 // Pure QtQuick on purpose — no Omarchy imports — so the bar and the
 // dev harness share this exact component.
 import QtQuick
@@ -12,20 +13,15 @@ Item {
   property color trackColor: Qt.rgba(fillColor.r, fillColor.g, fillColor.b, 0.14)
   property color borderColor: Qt.rgba(fillColor.r, fillColor.g, fillColor.b, 0.4)
 
-  property real bodyWidth: 7
-  property real bodyHeight: 14
   readonly property real inset: 1
-
   readonly property real clamped: Math.max(0, Math.min(1, root.ratio))
 
-  implicitWidth: root.bodyWidth
-  implicitHeight: root.bodyHeight
+  implicitWidth: 7
+  implicitHeight: 14
 
   Rectangle {
     id: body
-    anchors.centerIn: parent
-    width: root.bodyWidth
-    height: root.bodyHeight
+    anchors.fill: parent
     radius: Math.max(2, width / 2)
     color: root.trackColor
     border.width: 1

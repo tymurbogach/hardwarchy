@@ -8,7 +8,8 @@
 // in `ttf-jetbrains-mono-nerd-basic`, the Nerd Font installed on target
 // systems: microchip U+F2DB (cpu), thermometer_half U+F2C9 (temp),
 // desktop U+F108 (gpu), spinner U+F110 (fan), wifi U+F1EB (net),
-// hdd_o U+F0A0 (disk) — all classic FontAwesome 4 (U+F000-U+F2FF);
+// hdd_o U+F0A0 (disk), arrow_down U+F063 and arrow_up U+F062 (net down
+// and up) — all classic FontAwesome 4 (U+F000-U+F2FF);
 // memory U+EFC5 ("fa-memory", FontAwesome6's dedicated RAM-stick icon)
 // for mem — two earlier attempts (MDI "memory" U+F035B, a server-rack
 // stand-in U+F233) both read as "not RAM" and were dropped; built via
@@ -26,6 +27,8 @@ var GLYPH = {
   temp: "",
   gpu: "",
   mem: String.fromCodePoint(0xEFC5),
+  down: "",
+  up: "",
   fan: "",
   net: "",
   disk: ""
@@ -64,26 +67,9 @@ var EMPTY = {
   load: null,
   gpu_detail: null,
   net: null,
-  disk: null
-};
-
-// Placeholder shown when every metric is hidden.
-var PLACEHOLDER = {
-  key: "placeholder",
-  device: "placeholder",
-  kind: "placeholder",
-  label: "No metrics visible",
-  glyph: "",
-  bar: "—",
-  value: "All metrics hidden",
-  severity: 0,
-  dim: true,
-  percent: null,
-  tempC: null,
-  rpm: null,
-  mhz: null,
-  unit: "C",
-  ramFormat: "percent"
+  disk: null,
+  gpu_source: null,
+  gpu_sources: []
 };
 
 // Legacy metric keys from the previous widget.
@@ -168,8 +154,26 @@ function metricsCloneEmpty() {
     load: null,
     gpu_detail: null,
     net: null,
-    disk: null
+    disk: null,
+    gpu_source: null,
+    gpu_sources: []
   };
+}
+
+// A list of non-empty strings, or [] for anything else.
+function metricsStrList(v) {
+  var out = [];
+  if (!metricsIsArray(v)) {
+    return out;
+  }
+  var i = 0;
+  for (i = 0; i < v.length; i++) {
+    var s = metricsStr(v[i]);
+    if (s !== null && typeof v[i] === "string") {
+      out.push(s);
+    }
+  }
+  return out;
 }
 
 function metricsParseLoad(v) {
@@ -217,6 +221,7 @@ function metricsParseNet(v) {
   }
   return {
     iface: iface,
+    ifaces: metricsStrList(v.ifaces),
     down_bps: metricsNum(v.down_bps),
     up_bps: metricsNum(v.up_bps)
   };
@@ -238,7 +243,10 @@ function metricsParseDisk(v) {
   }
   return {
     mount: mount,
+    mounts: metricsStrList(v.mounts),
     used_pct: usedPct,
+    used_b: metricsNum(v.used_b),
+    total_b: metricsNum(v.total_b),
     read_bps: readBps,
     write_bps: writeBps
   };
@@ -351,6 +359,8 @@ function parse(line) {
   out.net = metricsParseNet(obj.net);
   out.disk = metricsParseDisk(obj.disk);
   out.fans = metricsParseFans(obj.fans);
+  out.gpu_source = metricsStr(obj.gpu_source);
+  out.gpu_sources = metricsStrList(obj.gpu_sources);
   return out;
 }
 
@@ -688,15 +698,32 @@ function metricsRateLong(bytesPerSec) {
   return String(Math.round(n)) + " B/s";
 }
 
-function metricsThreshold(prefs, key, fallback) {
-  var v = null;
-  if (prefs && typeof prefs === "object") {
-    v = metricsNum(prefs[key]);
+// A group's warn/crit pair, falling back per field when missing.
+function metricsLimits(g, warnKey, critKey, warn, crit) {
+  var w = metricsNum(g[warnKey]);
+  var c = metricsNum(g[critKey]);
+  return [w === null ? warn : w, c === null ? crit : c];
+}
+
+// Whether a part draws anything: any of the given toggles is on. A part
+// the prefs do not carry at all counts as shown, so ad-hoc prefs in tests
+// and callers without a group still see every metric.
+function metricsPartShows(part, keys) {
+  if (!part || typeof part !== "object") {
+    return true;
   }
-  if (v === null) {
-    return fallback;
+  var i = 0;
+  for (i = 0; i < keys.length; i++) {
+    if (part[keys[i]] === true) {
+      return true;
+    }
   }
-  return v;
+  return false;
+}
+
+// The clock draws in the bar only when its part says so.
+function metricsClockOn(g) {
+  return !!(g.clock && typeof g.clock === "object" && g.clock.show === true);
 }
 
 function metricsGroupOf(prefs, id) {
@@ -709,12 +736,60 @@ function metricsGroupOf(prefs, id) {
   return {};
 }
 
-// Build the metric catalog in default bar order:
-// CPU usage, CPU temp, GPU usage, GPU temp, memory, fans as found.
-// `groupModes` carries each device's already-resolved ("inherit" already
-// substituted by the caller) display mode, needed only to decide whether
-// that device's own "show clocks" option applies (digits mode only).
-function metrics(reading, groupModes, prefs) {
+// "9.4/62 GiB", the menu form of metricsGibPair.
+function metricsGibLong(usedGib, totalGib) {
+  var u = metricsGib(usedGib);
+  var t = metricsGib(totalGib);
+  if (u === null || t === null) {
+    return null;
+  }
+  return u + "/" + t + " GiB";
+}
+
+// Bar form of a power draw: one decimal under 10 W, none above.
+function metricsWattsShort(w) {
+  var n = metricsNum(w);
+  if (n === null || n < 0) {
+    return null;
+  }
+  if (n < 10) {
+    return (Math.round(n * 10) / 10).toFixed(1) + "W";
+  }
+  return String(Math.round(n)) + "W";
+}
+
+// A used/total pair as a percentage metric's extra fields: the padded
+// bar digits, the GiB pair, the ratio and the menu value.
+function metricsUsedFields(pct, usedGib, totalGib) {
+  var pad = metricsPadPercent(pct);
+  var gib = (usedGib !== null && totalGib !== null && totalGib > 0) ? metricsGibPair(usedGib, totalGib) : null;
+  var gibLong = gib !== null ? metricsGibLong(usedGib, totalGib) : null;
+  return {
+    bar: pad.text + "%",
+    padLen: pad.padLen,
+    gib: gib,
+    value: String(Math.round(pct)) + " %" + (gibLong !== null ? " · " + gibLong : ""),
+    percent: pct,
+    ratio: pct / 100
+  };
+}
+
+function metricsAssign(target, fields) {
+  var k = "";
+  for (k in fields) {
+    if (Object.prototype.hasOwnProperty.call(fields, k)) {
+      target[k] = fields[k];
+    }
+  }
+  return target;
+}
+
+// Build the metric catalog in default bar order: CPU usage, temp and load
+// average; GPU usage, temp, memory and power; memory and swap; net down
+// and up; disk used, read and write; fans as found. Every metric the
+// reading can answer is built here; the group prefs decide later what
+// draws (metricsEffectiveHidden, Styles/Modes.js).
+function metrics(reading, prefs) {
   var out = [];
   if (reading === null || reading === undefined) {
     return out;
@@ -722,59 +797,57 @@ function metrics(reading, groupModes, prefs) {
   if (typeof reading !== "object" || metricsIsArray(reading)) {
     return out;
   }
-  var gm = (groupModes && typeof groupModes === "object" && !metricsIsArray(groupModes)) ? groupModes : {};
   var p = (prefs && typeof prefs === "object" && !metricsIsArray((prefs))) ? prefs : {};
   var unit = (p.unit === "F" || p.unit === "f") ? "F" : "C";
   var pgCpu = metricsGroupOf(p, "cpu");
   var pgGpu = metricsGroupOf(p, "gpu");
   var pgMem = metricsGroupOf(p, "mem");
+  var pgDisk = metricsGroupOf(p, "disk");
   var pgFan = metricsGroupOf(p, "fan");
-  var ramFormat = (pgMem.ramFormat === "used") ? "used" : "percent";
-  var showRpm = pgFan.showRpm === true;
-  var warnU = metricsThreshold(p, "warnUsage", 70);
-  var critU = metricsThreshold(p, "critUsage", 90);
-  var warnT = metricsThreshold(p, "warnTemp", 75);
-  var critT = metricsThreshold(p, "critTemp", 90);
-  var useClocksCpu = pgCpu.showClocks === true && (gm.cpu || "digits") === "digits";
-  var useClocksGpu = pgGpu.showClocks === true && (gm.gpu || "digits") === "digits";
+  // Each group warms on its own thresholds: a GPU runs hotter than a CPU.
+  var limCpuUsage = metricsLimits(pgCpu, "warnUsage", "critUsage", 70, 90);
+  var limCpuTemp = metricsLimits(pgCpu, "warnTemp", "critTemp", 75, 90);
+  var limGpuUsage = metricsLimits(pgGpu, "warnUsage", "critUsage", 70, 90);
+  var limGpuTemp = metricsLimits(pgGpu, "warnTemp", "critTemp", 75, 90);
+  var limMem = metricsLimits(pgMem, "warnUsage", "critUsage", 70, 90);
+  var limDisk = metricsLimits(pgDisk, "warnUsage", "critUsage", 70, 90);
+  var limFan = metricsLimits(pgFan, "warnRpm", "critRpm", 4000, 6000);
+  // A usage clock is its own field; the bar draws it as its own part.
+  var useClocksCpu = metricsClockOn(pgCpu);
+  var useClocksGpu = metricsClockOn(pgGpu);
+  var cpuModel = metricsStr(reading.cpu_model);
+  var cpuCores = metricsNum(reading.cpu_cores);
+  var load = (reading.load && typeof reading.load === "object") ? reading.load : null;
+  var loadOne = load ? metricsNum(load.one) : null;
+  var loadFive = load ? metricsNum(load.five) : null;
+  var loadFifteen = load ? metricsNum(load.fifteen) : null;
 
+  var cpuMhz = metricsNum(reading.cpu_mhz);
   var cpuP = metricsNum(reading.cpu);
   if (cpuP !== null) {
-    var cpuMhz = metricsNum(reading.cpu_mhz);
     var cpuPad = metricsPadPercent(cpuP);
-    var bar = cpuPad.text + "%";
-    var value = String(Math.round(cpuP)) + " %";
-    if (useClocksCpu && cpuMhz !== null) {
-      var short = metricsClockShort(cpuMhz);
-      var long = metricsClockLong(cpuMhz);
-      if (short !== null && long !== null) {
-        bar = bar + " " + short;
-        value = value + " · " + long;
-      }
-    }
+    var cpuClockLong = useClocksCpu ? metricsClockLong(cpuMhz) : null;
     out.push({
       key: "cpu_usage",
       device: "cpu",
       kind: "usage",
       label: "CPU usage",
       glyph: GLYPH.cpu,
-      bar: bar,
-      value: value,
-      severity: metricsRamp(cpuP, warnU, critU),
+      bar: cpuPad.text + "%",
+      padLen: cpuPad.padLen,
+      clock: useClocksCpu ? metricsClockShort(cpuMhz) : null,
+      value: String(Math.round(cpuP)) + " %" + (cpuClockLong !== null ? " · " + cpuClockLong : ""),
+      severity: metricsRamp(cpuP, limCpuUsage[0], limCpuUsage[1]),
       dim: false,
       percent: cpuP,
       ratio: cpuP / 100,
-      padLen: cpuPad.padLen,
-      tempC: null,
-      rpm: null,
       mhz: cpuMhz,
       unit: unit,
-      ramFormat: ramFormat,
-      cpuModel: metricsStr(reading.cpu_model),
-      cpuCores: metricsNum(reading.cpu_cores),
-      loadOne: reading.load ? metricsNum(reading.load.one) : null,
-      loadFive: reading.load ? metricsNum(reading.load.five) : null,
-      loadFifteen: reading.load ? metricsNum(reading.load.fifteen) : null
+      cpuModel: cpuModel,
+      cpuCores: cpuCores,
+      loadOne: loadOne,
+      loadFive: loadFive,
+      loadFifteen: loadFifteen
     });
   }
 
@@ -788,62 +861,64 @@ function metrics(reading, groupModes, prefs) {
       glyph: GLYPH.temp,
       bar: metricsTempBar(cpuT, unit),
       value: metricsTempValue(cpuT, unit),
-      severity: metricsRamp(cpuT, warnT, critT),
+      severity: metricsRamp(cpuT, limCpuTemp[0], limCpuTemp[1]),
       dim: false,
-      percent: null,
       tempC: cpuT,
-      rpm: null,
-      mhz: metricsNum(reading.cpu_mhz),
+      mhz: cpuMhz,
       unit: unit,
-      ramFormat: ramFormat,
-      cpuModel: metricsStr(reading.cpu_model),
-      cpuCores: metricsNum(reading.cpu_cores),
-      loadOne: reading.load ? metricsNum(reading.load.one) : null,
-      loadFive: reading.load ? metricsNum(reading.load.five) : null,
-      loadFifteen: reading.load ? metricsNum(reading.load.fifteen) : null
+      cpuModel: cpuModel,
+      cpuCores: cpuCores,
+      loadOne: loadOne,
+      loadFive: loadFive,
+      loadFifteen: loadFifteen
     });
   }
 
+  if (loadOne !== null || loadFive !== null || loadFifteen !== null) {
+    var avgShort = function (v) { return v !== null ? v.toFixed(2) : null; };
+    var avgParts = [loadOne, loadFive, loadFifteen].filter(function (v) { return v !== null; }).map(avgShort);
+    out.push({
+      key: "cpu_avg",
+      device: "cpu",
+      kind: "avg",
+      label: "Load average",
+      glyph: "",
+      bar: avgParts.join(" "),
+      one: avgShort(loadOne),
+      five: avgShort(loadFive),
+      fifteen: avgShort(loadFifteen),
+      value: avgParts.join(" · "),
+      severity: 0,
+      dim: false,
+      unit: unit
+    });
+  }
+
+  var gpuDetail = (reading.gpu_detail && typeof reading.gpu_detail === "object") ? reading.gpu_detail : null;
+  var vramUsed = gpuDetail ? metricsNum(gpuDetail.vram_used_b) : null;
+  var vramTotal = gpuDetail ? metricsNum(gpuDetail.vram_total_b) : null;
+  var watts = gpuDetail ? metricsNum(gpuDetail.watts) : null;
+  var gpuMhz = metricsNum(reading.gpu_mhz);
   var gpuP = metricsNum(reading.gpu);
   if (gpuP !== null) {
-    var gpuMhz = metricsNum(reading.gpu_mhz);
     var gpuPad = metricsPadPercent(gpuP);
-    var gbar = gpuPad.text + "%";
-    var gvalue = String(Math.round(gpuP)) + " %";
-    if (useClocksGpu && gpuMhz !== null) {
-      var gshort = metricsClockShort(gpuMhz);
-      var glong = metricsClockLong(gpuMhz);
-      if (gshort !== null && glong !== null) {
-        gbar = gbar + " " + gshort;
-        gvalue = gvalue + " · " + glong;
-      }
-    }
-    var vramUsed = null;
-    var vramTotal = null;
-    var watts = null;
-    if (reading.gpu_detail && typeof reading.gpu_detail === "object") {
-      vramUsed = metricsNum(reading.gpu_detail.vram_used_b);
-      vramTotal = metricsNum(reading.gpu_detail.vram_total_b);
-      watts = metricsNum(reading.gpu_detail.watts);
-    }
+    var gpuClockLong = useClocksGpu ? metricsClockLong(gpuMhz) : null;
     out.push({
       key: "gpu_usage",
       device: "gpu",
       kind: "usage",
       label: "GPU usage",
       glyph: GLYPH.gpu,
-      bar: gbar,
-      value: gvalue,
-      severity: metricsRamp(gpuP, warnU, critU),
+      bar: gpuPad.text + "%",
+      padLen: gpuPad.padLen,
+      clock: useClocksGpu ? metricsClockShort(gpuMhz) : null,
+      value: String(Math.round(gpuP)) + " %" + (gpuClockLong !== null ? " · " + gpuClockLong : ""),
+      severity: metricsRamp(gpuP, limGpuUsage[0], limGpuUsage[1]),
       dim: false,
       percent: gpuP,
       ratio: gpuP / 100,
-      padLen: gpuPad.padLen,
-      tempC: null,
-      rpm: null,
       mhz: gpuMhz,
       unit: unit,
-      ramFormat: ramFormat,
       vramUsedB: vramUsed,
       vramTotalB: vramTotal,
       watts: watts
@@ -852,15 +927,6 @@ function metrics(reading, groupModes, prefs) {
 
   var gpuT = metricsNum(reading.gpu_temp);
   if (gpuT !== null) {
-    var gm = metricsNum(reading.gpu_mhz);
-    var vu = null;
-    var vt = null;
-    var w = null;
-    if (reading.gpu_detail && typeof reading.gpu_detail === "object") {
-      vu = metricsNum(reading.gpu_detail.vram_used_b);
-      vt = metricsNum(reading.gpu_detail.vram_total_b);
-      w = metricsNum(reading.gpu_detail.watts);
-    }
     out.push({
       key: "gpu_temp",
       device: "gpu",
@@ -869,84 +935,85 @@ function metrics(reading, groupModes, prefs) {
       glyph: GLYPH.temp,
       bar: metricsTempBar(gpuT, unit),
       value: metricsTempValue(gpuT, unit),
-      severity: metricsRamp(gpuT, warnT, critT),
+      severity: metricsRamp(gpuT, limGpuTemp[0], limGpuTemp[1]),
       dim: false,
-      percent: null,
       tempC: gpuT,
-      rpm: null,
-      mhz: gm,
+      mhz: gpuMhz,
       unit: unit,
-      ramFormat: ramFormat,
-      vramUsedB: vu,
-      vramTotalB: vt,
-      watts: w
+      vramUsedB: vramUsed,
+      vramTotalB: vramTotal,
+      watts: watts
     });
   }
 
-  var memP = metricsNum(reading.mem);
+  if (vramUsed !== null && vramTotal !== null && vramTotal > 0) {
+    var vramPct = vramUsed / vramTotal * 100;
+    out.push(metricsAssign({
+      key: "gpu_vram",
+      device: "gpu",
+      kind: "vram",
+      label: "GPU memory",
+      glyph: "",
+      severity: metricsRamp(vramPct, limGpuUsage[0], limGpuUsage[1]),
+      dim: false,
+      unit: unit
+    }, metricsUsedFields(vramPct, vramUsed / 1073741824, vramTotal / 1073741824)));
+  }
+
+  if (watts !== null) {
+    var wattsShort = metricsWattsShort(watts);
+    out.push({
+      key: "gpu_power",
+      device: "gpu",
+      kind: "power",
+      label: "GPU power",
+      glyph: "",
+      bar: wattsShort,
+      value: wattsShort.replace("W", " W"),
+      severity: 0,
+      dim: false,
+      unit: unit
+    });
+  }
+
   var memUsedKib = metricsNum(reading.mem_used_kib);
   var memTotalKib = metricsNum(reading.mem_total_kib);
   var swapUsedKib = metricsNum(reading.swap_used_kib);
   var swapTotalKib = metricsNum(reading.swap_total_kib);
-  var memBar = null;
-  var memValue = null;
-  var memSev = 0;
-  var memPadLen = 0;
-  if (ramFormat === "used" && memUsedKib !== null && memTotalKib !== null && memTotalKib > 0) {
-    var usedGib = memUsedKib / 1048576;
-    var totalGib = memTotalKib / 1048576;
-    var pair = metricsGibPair(usedGib, totalGib);
-    if (pair !== null) {
-      memBar = pair;
-      memValue = pair;
-    }
+  var memHasKib = memUsedKib !== null && memTotalKib !== null && memTotalKib > 0;
+  var memP = metricsNum(reading.mem);
+  if (memP === null && memHasKib) {
+    memP = memUsedKib / memTotalKib * 100;
   }
-  if (memBar === null && memP !== null) {
-    var memPad = metricsPadPercent(memP);
-    memBar = memPad.text + "%";
-    memValue = String(Math.round(memP)) + " %";
-    memPadLen = memPad.padLen;
-  }
-  if (memBar === null && memUsedKib !== null && memTotalKib !== null && memTotalKib > 0) {
-    var ug = memUsedKib / 1048576;
-    var tg = memTotalKib / 1048576;
-    var pr = metricsGibPair(ug, tg);
-    if (pr !== null) {
-      memBar = pr;
-      memValue = pr;
-    }
-  }
-  if (memBar !== null) {
-    if (memP !== null) {
-      memSev = metricsRamp(memP, warnU, critU);
-    } else if (memUsedKib !== null && memTotalKib !== null && memTotalKib > 0) {
-      memSev = metricsRamp(memUsedKib / memTotalKib * 100, warnU, critU);
-    }
-    out.push({
+  if (memP !== null) {
+    out.push(metricsAssign({
       key: "mem_usage",
       device: "mem",
       kind: "usage",
-      label: "Memory usage",
+      label: "Memory used",
       glyph: GLYPH.mem,
-      bar: memBar,
-      value: memValue,
-      severity: memSev,
+      severity: metricsRamp(memP, limMem[0], limMem[1]),
       dim: false,
-      percent: memP,
-      ratio: (memP !== null ? memP
-        : (memUsedKib !== null && memTotalKib !== null && memTotalKib > 0
-           ? memUsedKib / memTotalKib * 100 : null)) / 100,
-      padLen: memPadLen,
-      tempC: null,
-      rpm: null,
-      mhz: null,
       unit: unit,
-      ramFormat: ramFormat,
       memUsedKib: memUsedKib,
       memTotalKib: memTotalKib,
       swapUsedKib: swapUsedKib,
       swapTotalKib: swapTotalKib
-    });
+    }, metricsUsedFields(memP, memHasKib ? memUsedKib / 1048576 : null, memHasKib ? memTotalKib / 1048576 : null)));
+  }
+
+  if (swapUsedKib !== null && swapTotalKib !== null && swapTotalKib > 0) {
+    var swapPct = swapUsedKib / swapTotalKib * 100;
+    out.push(metricsAssign({
+      key: "mem_swap",
+      device: "mem",
+      kind: "swap",
+      label: "Swap",
+      glyph: "",
+      severity: metricsRamp(swapPct, limMem[0], limMem[1]),
+      dim: false,
+      unit: unit
+    }, metricsUsedFields(swapPct, swapUsedKib / 1048576, swapTotalKib / 1048576)));
   }
 
   if (reading.net && typeof reading.net === "object") {
@@ -959,17 +1026,12 @@ function metrics(reading, groupModes, prefs) {
         device: "net",
         kind: "down",
         label: "Net down",
-        glyph: GLYPH.net,
+        glyph: GLYPH.down,
         bar: metricsRateShort(netDown),
         value: metricsRateLong(netDown),
         severity: 0,
         dim: false,
-        percent: null,
-        tempC: null,
-        rpm: null,
-        mhz: null,
         unit: unit,
-        ramFormat: ramFormat,
         iface: netIface
       });
     }
@@ -979,70 +1041,58 @@ function metrics(reading, groupModes, prefs) {
         device: "net",
         kind: "up",
         label: "Net up",
-        glyph: GLYPH.net,
+        glyph: GLYPH.up,
         bar: metricsRateShort(netUp),
         value: metricsRateLong(netUp),
         severity: 0,
         dim: false,
-        percent: null,
-        tempC: null,
-        rpm: null,
-        mhz: null,
         unit: unit,
-        ramFormat: ramFormat,
         iface: netIface
       });
     }
   }
 
   if (reading.disk && typeof reading.disk === "object") {
-    var diskUsedPct = metricsNum(reading.disk.used_pct);
-    var diskMount = metricsStr(reading.disk.mount);
-    if (diskUsedPct !== null) {
-      var diskPad = metricsPadPercent(diskUsedPct);
-      out.push({
+    var disk = reading.disk;
+    var diskMount = metricsStr(disk.mount);
+    var diskPct = metricsNum(disk.used_pct);
+    var diskUsedB = metricsNum(disk.used_b);
+    var diskTotalB = metricsNum(disk.total_b);
+    var diskHasB = diskUsedB !== null && diskTotalB !== null && diskTotalB > 0;
+    if (diskPct !== null) {
+      out.push(metricsAssign({
         key: "disk_usage",
         device: "disk",
         kind: "usage",
-        label: "Disk usage",
+        label: "Disk used",
         glyph: GLYPH.disk,
-        bar: diskPad.text + "%",
-        value: String(Math.round(diskUsedPct)) + " %",
-        severity: metricsRamp(diskUsedPct, warnU, critU),
+        severity: metricsRamp(diskPct, limDisk[0], limDisk[1]),
         dim: false,
-        percent: diskUsedPct,
-        ratio: diskUsedPct / 100,
-        padLen: diskPad.padLen,
-        tempC: null,
-        rpm: null,
-        mhz: null,
         unit: unit,
-        ramFormat: ramFormat,
         mount: diskMount
-      });
+      }, metricsUsedFields(diskPct, diskHasB ? diskUsedB / 1073741824 : null, diskHasB ? diskTotalB / 1073741824 : null)));
     }
-    var diskRead = metricsNum(reading.disk.read_bps);
-    var diskWrite = metricsNum(reading.disk.write_bps);
-    if (diskRead !== null || diskWrite !== null) {
-      var ioTotal = (diskRead || 0) + (diskWrite || 0);
+    var rates = [
+      { kind: "read", label: "Disk read", tag: "R", bps: metricsNum(disk.read_bps) },
+      { kind: "write", label: "Disk write", tag: "W", bps: metricsNum(disk.write_bps) }
+    ];
+    var ri = 0;
+    for (ri = 0; ri < rates.length; ri++) {
+      if (rates[ri].bps === null) {
+        continue;
+      }
       out.push({
-        key: "disk_io",
+        key: "disk_" + rates[ri].kind,
         device: "disk",
-        kind: "io",
-        label: "Disk I/O",
-        glyph: GLYPH.disk,
-        bar: metricsRateShort(ioTotal),
-        value: metricsRateLong(ioTotal),
+        kind: rates[ri].kind,
+        label: rates[ri].label,
+        glyph: rates[ri].tag,
+        bar: metricsRateShort(rates[ri].bps),
+        value: metricsRateLong(rates[ri].bps),
         severity: 0,
         dim: false,
-        percent: null,
-        tempC: null,
-        rpm: null,
-        mhz: null,
         unit: unit,
-        ramFormat: ramFormat,
-        readBps: diskRead,
-        writeBps: diskWrite
+        mount: diskMount
       });
     }
   }
@@ -1050,6 +1100,7 @@ function metrics(reading, groupModes, prefs) {
   var fans = reading.fans;
   if (metricsIsArray(fans) && fans.length > 0) {
     var labels = fanLabels(fans);
+    var names = (pgFan.names && typeof pgFan.names === "object" && !metricsIsArray(pgFan.names)) ? pgFan.names : {};
     var fi = 0;
     for (fi = 0; fi < fans.length; fi++) {
       var fan = fans[fi];
@@ -1058,45 +1109,40 @@ function metrics(reading, groupModes, prefs) {
         continue;
       }
       var fid = fan.id ? String(fan.id) : "fan" + String(fi + 1);
-      var disp = labels[fi];
-      if (disp === undefined || disp === null) {
-        disp = fan.label ? String(fan.label) : fid;
+      var fanKey = "fan:" + fid;
+      var auto = labels[fi];
+      if (auto === undefined || auto === null) {
+        auto = fan.label ? String(fan.label) : fid;
       }
-      var fbar = null;
-      var fvalue = null;
-      var fdim = false;
-      if (Math.round(rpm) === 0) {
-        fbar = "0";
-        fvalue = "stopped";
-        fdim = true;
-      } else {
-        if (showRpm) {
-          fbar = String(Math.round(rpm)) + " RPM";
-        } else {
-          fbar = String(Math.round(rpm));
-        }
-        fvalue = String(Math.round(rpm)) + " RPM";
-      }
+      // A name the user gave this fan wins over the detected label.
+      var custom = typeof names[fanKey] === "string" ? metricsStr(names[fanKey]) : null;
+      var r = Math.round(rpm);
       out.push({
-        key: "fan:" + fid,
+        key: fanKey,
         device: "fan",
         kind: "fan",
-        label: disp,
+        label: custom !== null ? custom : auto,
+        autoLabel: auto,
         glyph: GLYPH.fan,
-        bar: fbar,
-        value: fvalue,
-        severity: 0,
-        dim: fdim,
-        percent: null,
-        tempC: null,
-        rpm: Math.round(rpm),
-        mhz: null,
+        bar: String(r),
+        value: r === 0 ? "stopped" : String(r) + " RPM",
+        severity: r === 0 ? 0 : metricsRamp(r, limFan[0], limFan[1]),
+        dim: r === 0,
+        rpm: r,
         unit: unit,
-        ramFormat: ramFormat,
-        chip: metricsStr(fan.chip),
-        fanLabel: disp
+        chip: metricsStr(fan.chip)
       });
     }
+  }
+
+  // The label a cell draws: the group's glyph, and its word (the group's
+  // short name, or a fan's own label, since fans are the one group with
+  // several cells on the bar). `glyph` stays the metric's own mark (the
+  // thermometer, the net arrows, the disk R/W).
+  var wi = 0;
+  for (wi = 0; wi < out.length; wi++) {
+    out[wi].groupGlyph = GLYPH[out[wi].device] || "";
+    out[wi].word = out[wi].device === "fan" ? out[wi].label : GROUP_LABELS[out[wi].device];
   }
 
   return out;
@@ -1179,11 +1225,11 @@ function shown(list, hidden) {
 // Intra-group metric-key suffixes, in display order, for every group that
 // isn't the auto-discovered fan list.
 var GROUP_METRIC_KINDS = {
-  cpu: ["usage", "temp"],
-  gpu: ["usage", "temp"],
-  mem: ["usage"],
+  cpu: ["usage", "temp", "avg"],
+  gpu: ["usage", "temp", "vram", "power"],
+  mem: ["usage", "swap"],
   net: ["down", "up"],
-  disk: ["usage", "io"]
+  disk: ["usage", "read", "write"]
 };
 
 // Expand a group-id order (prefs.order) into a flat metric-key order,
@@ -1228,65 +1274,99 @@ function metricsEffectiveHidden(allMetrics, prefs) {
     return out;
   }
   var p = (prefs && typeof prefs === "object" && !metricsIsArray(prefs)) ? prefs : {};
-  var pgCpu = metricsGroupOf(p, "cpu");
-  var pgGpu = metricsGroupOf(p, "gpu");
-  var pgMem = metricsGroupOf(p, "mem");
-  var pgNet = metricsGroupOf(p, "net");
-  var pgDisk = metricsGroupOf(p, "disk");
-  var pgFan = metricsGroupOf(p, "fan");
   var i = 0;
   for (i = 0; i < allMetrics.length; i++) {
     var m = allMetrics[i];
-    if (!m || typeof m.key !== "string") {
-      continue;
+    if (m && typeof m.key === "string" && metricsDrawsNothing(m, metricsGroupOf(p, m.device))) {
+      out.push(m.key);
     }
-    var dev = m.device;
-    if (dev === "cpu") {
-      if (pgCpu.enabled === false) {
-        out.push(m.key);
-        continue;
-      }
-      if (m.kind === "usage" && pgCpu.showUsage === false) {
-        out.push(m.key);
-      }
-      if (m.kind === "temp" && pgCpu.showTemp === false) {
-        out.push(m.key);
-      }
-    } else if (dev === "gpu") {
-      if (pgGpu.enabled === false) {
-        out.push(m.key);
-        continue;
-      }
-      if (m.kind === "usage" && pgGpu.showUsage === false) {
-        out.push(m.key);
-      }
-      if (m.kind === "temp" && pgGpu.showTemp === false) {
-        out.push(m.key);
-      }
-    } else if (dev === "mem") {
-      if (pgMem.enabled === false) {
-        out.push(m.key);
-      }
-    } else if (dev === "net") {
-      if (pgNet.enabled === false) {
-        out.push(m.key);
-      }
-    } else if (dev === "disk") {
-      if (pgDisk.enabled === false) {
-        out.push(m.key);
-        continue;
-      }
-      if (m.kind === "usage" && pgDisk.showUsage === false) {
-        out.push(m.key);
-      }
-      if (m.kind === "io" && pgDisk.showIo === false) {
-        out.push(m.key);
-      }
-    } else if (dev === "fan") {
-      if (pgFan.enabled === false || isHidden(m.key, pgFan.hidden)) {
-        out.push(m.key);
+  }
+  return out;
+}
+
+// Whether a metric draws nothing on the bar: its group is off, or every
+// toggle of the part it feeds is off. A CPU/GPU usage metric also feeds
+// the clock, so it stays while either one shows.
+function metricsDrawsNothing(m, g) {
+  if (g.enabled === false) {
+    return true;
+  }
+  var dev = m.device;
+  if (dev === "fan") {
+    if (isHidden(m.key, g.hidden)) {
+      return true;
+    }
+    if (m.rpm === 0 && g.showStopped === false) {
+      return true;
+    }
+    return !metricsPartShows(g.rpm, ["value"]);
+  }
+  if (m.kind === "usage") {
+    if (dev === "cpu" || dev === "gpu") {
+      return !metricsPartShows(g.load, ["bar", "number"]) && !metricsClockOn(g);
+    }
+    return !metricsPartShows(g.used, ["bar", "percent", "gib"]);
+  }
+  if (m.kind === "temp") {
+    return !metricsPartShows(g.temp, ["value"]);
+  }
+  if (m.kind === "avg") {
+    return !metricsPartShows(g.avg, ["one", "five", "fifteen"]);
+  }
+  if (m.kind === "vram" || m.kind === "swap") {
+    return !metricsPartShows(g[m.kind], ["bar", "percent", "gib"]);
+  }
+  if (m.kind === "power") {
+    return !metricsPartShows(g.power, ["show"]);
+  }
+  if (m.kind === "down" || m.kind === "up" || m.kind === "read" || m.kind === "write") {
+    return !metricsPartShows(g[m.kind], ["value"]);
+  }
+  return false;
+}
+
+// The collector provider (sysread's MONITOR_READ) behind each metric.
+var METRIC_READS = {
+  cpu_usage: "cpu", cpu_temp: "temp", cpu_avg: "load",
+  gpu_usage: "gpu", gpu_temp: "gpu", gpu_vram: "gpu", gpu_power: "gpu",
+  mem_usage: "mem", mem_swap: "mem",
+  net_down: "net", net_up: "net",
+  disk_usage: "disk", disk_read: "io", disk_write: "io"
+};
+
+// What the collector reads for the bar, by the rules of
+// metricsDrawsNothing: a piece that draws nothing costs nothing. The CPU
+// group also reads the load average (for its tooltip) and, when that
+// piece shows, the clock. Mount and interface lists are for the menu,
+// which asks for everything while it is open.
+function metricsReadList(prefs) {
+  var p = (prefs && typeof prefs === "object" && !metricsIsArray(prefs)) ? prefs : {};
+  var out = [];
+  function need(name) {
+    if (out.indexOf(name) < 0) {
+      out.push(name);
+    }
+  }
+  var id = "";
+  var j = 0;
+  for (id in GROUP_METRIC_KINDS) {
+    var g = metricsGroupOf(p, id);
+    var kinds = GROUP_METRIC_KINDS[id];
+    for (j = 0; j < kinds.length; j++) {
+      if (!metricsDrawsNothing({ key: id + "_" + kinds[j], device: id, kind: kinds[j] }, g)) {
+        need(METRIC_READS[id + "_" + kinds[j]]);
       }
     }
+  }
+  var cpu = metricsGroupOf(p, "cpu");
+  if (cpu.enabled !== false) {
+    need("load");
+    if (metricsClockOn(cpu)) {
+      need("clocks");
+    }
+  }
+  if (!metricsDrawsNothing({ key: "", device: "fan", rpm: null }, metricsGroupOf(p, "fan"))) {
+    need("fans");
   }
   return out;
 }

@@ -24,9 +24,9 @@ from the spec.
 quickshell -p dev.qml
 
 # Same, with cold-start state via env vars (see README "Development" section
-# for the full matrix, e.g. MODULAR_HW_MONITOR_MODE, _HIDDEN, _GRAPHITE,
-# _FAKE_GPU, _FAKE_LOAD, _WORDS, _CLOCKS, _RAM)
-MODULAR_HW_MONITOR_MODE=combo MODULAR_HW_MONITOR_FAKE_GPU=1 quickshell -p dev.qml
+# for the full matrix: MODULAR_HW_MONITOR_PARTS, _ENABLE, _HIDDEN, _COLOR,
+# _FAKE_GPU, _FAKE_LOAD, _FONT)
+MODULAR_HW_MONITOR_PARTS='cpu.load=bar,number' MODULAR_HW_MONITOR_FAKE_GPU=1 quickshell -p dev.qml
 
 # Run the collector on its own
 ./scripts/sysread                      # one JSON reading on stdout
@@ -61,23 +61,33 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
                                                           |
                                                     Metrics.orderKeys() (apply user order)
                                                           |
-                                                    Modes.stripCells()  (apply hidden + display mode -> bar cells)
+                                                    Metrics.shown() + metricsGroupRuns() (hide, cluster per group)
                                                           |
-                                                     MetricButton x N    (strip in BarWidget.qml, rows in Panel.qml)
+                                                    Modes.groupStripCells() (per-group mode + label -> bar cells)
+                                                          |
+                                                     MetricButton x N    (strip in BarWidget.qml and dev.qml)
 ```
 
 - **`scripts/sysread`** — single bash script (`set -u`), organized as
   provider functions (`provider_cpu_usage`, `provider_memory`,
   `provider_hwmon_temp`, `provider_fans`, `provider_gpu_{nvidia,amd,intel}`,
-  `provider_clocks`, `provider_load`). Emits one `schema: 1` JSON object per
-  line (`emit_reading`). Missing sensors are `null`, never a fake zero. GPU
-  source is picked once at startup (`pick_gpu_source`) and cached. Accepts
+  `provider_clocks`, `provider_load`, `provider_net`, `provider_disk_*`).
+  Emits one `schema: 2` JSON object per line (`emit_reading`). Missing
+  sensors are `null`, never a fake zero. Sensor files are found by
+  `scan_sensors` at startup (and every 30 readings) and read with builtins;
+  never add a per-reading fork (`$(...)`, awk, date, sleep) without
+  measuring. `MONITOR_READ` (from `Metrics.metricsReadList`, `all` while
+  the menu is open) names the providers to run, so what is off is not read.
+  GPU source is picked once at startup (`pick_gpu_source`) and cached. Accepts
   `MONITOR_HWMON_ROOT` (and `MONITOR_DRM_ROOT`) env overrides so tests and
   the harness can point it at a fake sensor tree instead of the real system.
+  The widget hands down the menu's source choices the same way
+  (`MONITOR_GPU`, `MONITOR_NET_IFACE`, `MONITOR_ROOT_MOUNT`), and the JSON
+  lists what the menu can offer (`gpu_sources`, `net.ifaces`, `disk.mounts`).
 
 - **`Model/Metrics.js`** — the core translation layer. `parse()` sanitizes
   one JSON line into a reading object (never throws, garbage → `EMPTY`).
-  `metrics(reading, opts, prefs)` turns a reading into the ordered default
+  `metrics(reading, prefs)` turns a reading into the ordered default
   metric catalog (CPU usage → CPU temp → GPU usage → GPU temp → Memory →
   fans), computing bar/value strings, severity ramps, glyphs, etc. per
   SPEC section 3. `orderKeys()` applies the user's saved order. `isHidden`/
@@ -85,21 +95,25 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   deduplicated here (`fanLabels`) — two fans with the same label get
   `(<chip>)` appended.
 
-- **`Styles/Modes.js`** — turns an already-ordered, already-visible metric
-  list into bar **cells** (`stripCells`). This is where `digits`/`gauges`/
-  `combo` modes live: a cell models one click target, which is not always
-  one metric — `combo` mode joins a device's usage and temp into a single
-  `"joined"` cell (glyph + gauge from the usage half, digits from the temp
-  half). Falls back to one dimmed placeholder cell when every metric is
-  hidden, so the bar never has a zero-pixel dead slot.
+- **`Styles/Modes.js`** — turns per-group runs of visible metrics into bar
+  **cells** (`groupCells`, `groupStripCells`). One cell per group (one per
+  fan), a click target each. A cell is a list of **pieces** (`mark`,
+  `gauge`, `text`, each with its gap, pad, quiet flag and own severity),
+  built from the group's parts (boolean toggles plus a `quiet` flag each,
+  see `Prefs.js`), so MetricButton only draws data. `cycleLoadPatch()` is
+  the right-click. Falls back to one dimmed
+  placeholder cell when every metric is hidden, so the bar never has a
+  zero-pixel dead slot.
 
 - **`Model/Prefs.js`** — prefs validation/versioning. `adoptPrefs(raw)` is
   the only way prefs enter the app: it clamps thresholds, enforces
   `warn < crit`, drops unknown/malformed fields, and always returns a
   complete, valid object (corrupt file → defaults, never a blank bar).
-  `migrateBarStyle()` handles the legacy `barStyle` string → `mode` +
-  option-flags mapping and legacy key renames (`cpu`→`cpu_usage`, etc.),
-  invoked once when the prefs file loads.
+  `prefsUpgradeV1ToV2()` (called by `adoptPrefs` for any file without
+  `groups`) handles the v1 shape, the legacy `barStyle` mapping and
+  legacy key renames (`cpu`→`cpu_usage`, etc.); `prefsUpgradeDraft()`
+  handles the pre-release draft of v2 (detected by a top-level
+  `defaultMode`).
 
 - **`Model/Tooltip.js`** / **`Model/Format.js`** / **`Model/Severity.js`** —
   tooltip text assembly, number/unit formatting (temp, clocks, GiB pairs),
@@ -110,31 +124,39 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   `~/.config/omarchy/modular-hw-monitor.json` via a watched `FileView`
   (so two bar instances/monitors stay in sync), runs the `sysread --loop`
   `Process`, and derives `allMetrics` → `orderedMetrics` → `stripModel`
-  through the pipeline above. Polls every 3s normally, 1s while the menu
-  is open. Every prefs mutation goes through `commit()` →
+  through the pipeline above. Polls every `refresh` seconds (3 by
+  default), 1s while the menu is open, and restarts the collector with
+  the GPU, interface and mount the menu picked. Every prefs mutation goes through `commit()` →
   `Prefs.adoptPrefs()` → `savePrefs()`, so nothing binds to half-written
-  state. Left/middle click opens the menu; right-click cycles the mode.
+  state. Left/middle click opens the menu; right-click cycles that group's load.
 
 - **`Panel.qml`** — the popout menu. Pure view: reads `hostWidget.prefs`/
   `orderedMetrics`, forwards clicks/keyboard back to `BarWidget.qml`'s
-  functions (`toggleHidden`, `moveMetric`, `setMode`, `setFlag`,
-  `stepThreshold`, `resetDefaults`). Three sections (Metrics, View,
-  Units & alerts) plus a reset footer, matching SPEC section 6.
+  functions (`patchGroup`, `resetGroup`, `stepGroupLimit`, `previewCells`,
+  `moveGroup`, `toggleFanHidden`, `renameFan`, `moveFan`, `setUnit`,
+  `stepColorIntensity`, `stepGap`, `stepRefresh`, `resetDefaults`). One
+  card per group: a header with a live preview, one row per cell piece
+  (rows as data in `rowsFor`/`buttonsOf`, one flat `navItems` list for the
+  keyboard), then a General section, matching SPEC section 6. Cards and rows repeat over
+  stable ids, not per-reading arrays, so they are not rebuilt every
+  second or on every click.
 
 - **`MetricButton.qml`** — the one shared bar-cell component, deliberately
   **pure QtQuick with no Omarchy imports**, so both the real bar
   (`BarWidget.qml`) and the standalone harness (`dev.qml`) render pixel-
-  identical output. Handles glyph/value/gauge layout (ink-box-aware
-  glyph spacing, not character-cell spacing), click registration with the
-  bar's hit-testing, and tooltip show/hide.
+  identical output (the menu's header preview uses it too). Lays out a
+  cell's `pieces` with ink-to-ink gaps (not character-cell spacing),
+  centres the gauge on the digit ink, colors each piece by its own
+  severity, and handles click registration with the bar's hit-testing
+  and tooltip show/hide.
 
 - **`dev.qml`** — a `Quickshell` `ShellRoot` harness that reconstructs the
-  same pipeline (`Metrics.parse` → `Metrics.metrics` → `Modes.stripCells`)
+  same pipeline (`Metrics.parse` → `Metrics.metrics` → `Modes.groupStripCells`)
   from env vars instead of a prefs file/live `Process`, for screenshotting
   states cold without installing the plugin.
 
 - **`Menu/`** — small presentational subcomponents used only by
-  `Panel.qml` (`MetricRow`, `Chip`, `Stepper`).
+  `Panel.qml` (`GroupCard`, `SettingRow`, `LimitRow`, `MetricRow`, `Stepper`).
 
 ### Key invariants worth preserving when editing
 

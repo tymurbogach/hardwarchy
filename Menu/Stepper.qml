@@ -1,23 +1,25 @@
-// A labelled numeric stepper: name, minus, value, plus.
-// Used for the alert thresholds, which change too rarely to earn
-// anything bigger.
+// A labelled numeric stepper: name, minus, value, plus. The value sits
+// in a fixed-width slot, so the buttons never shift as it changes.
+// Buttons count 0 (−) and 1 (+) for the keyboard cursor.
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Ui
 
 RowLayout {
   id: root
 
   required property string title
   required property string text
+  // The button the keyboard cursor sits on, or -1.
+  property int cursorButton: -1
 
   property color foreground: "#ffffff"
   property string fontFamily: Style.font.family
 
-  signal decrement()
-  signal increment()
+  signal pressed(int index)
 
-  spacing: Style.space(8)
+  spacing: Style.space(4)
 
   Text {
     Layout.fillWidth: true
@@ -26,46 +28,36 @@ RowLayout {
     color: root.foreground
     opacity: 0.7
     font.family: root.fontFamily
-    font.pixelSize: Style.font.body
+    font.pixelSize: Style.font.bodySmall
+  }
+
+  PanelActionButton {
+    iconText: "−"
+    size: Style.space(20)
+    hasCursor: root.cursorButton === 0
+    fontFamily: root.fontFamily
+    fontSize: Style.font.body
+    foreground: root.foreground
+    onClicked: root.pressed(0)
   }
 
   Text {
-    text: "−"
-    color: root.foreground
-    opacity: 0.6
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.body
-
-    MouseArea {
-      anchors.fill: parent
-      anchors.margins: -Style.space(4)
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: root.decrement()
-    }
-  }
-
-  Text {
+    Layout.preferredWidth: Style.space(34)
+    horizontalAlignment: Text.AlignHCenter
     text: root.text
     color: root.foreground
     font.family: root.fontFamily
-    font.pixelSize: Style.font.body
+    font.pixelSize: Style.font.bodySmall
     font.bold: true
   }
 
-  Text {
-    text: "+"
-    color: root.foreground
-    opacity: 0.6
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.body
-
-    MouseArea {
-      anchors.fill: parent
-      anchors.margins: -Style.space(4)
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: root.increment()
-    }
+  PanelActionButton {
+    iconText: "+"
+    size: Style.space(20)
+    hasCursor: root.cursorButton === 1
+    fontFamily: root.fontFamily
+    fontSize: Style.font.body
+    foreground: root.foreground
+    onClicked: root.pressed(1)
   }
 }

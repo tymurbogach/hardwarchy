@@ -1,7 +1,7 @@
 // Pure-logic model tests. Node only, no dependencies.
 // Loads each Model and Styles file via vm in one shared sandbox,
 // then asserts observable behavior from SPEC sections 2-7 (v2 schema:
-// monitor groups, per-group display config, generalized combo pairing).
+// monitor groups, one part per piece of a cell, per-group alerts).
 var fs = require("fs");
 var path = require("path");
 var vm = require("vm");
@@ -105,20 +105,18 @@ var fanLabels = S("fanLabels");
 var metricsFn = S("metrics");
 var orderKeys = S("orderKeys");
 var shown = S("shown");
-var PLACEHOLDER = S("PLACEHOLDER");
 var isHidden = S("isHidden");
 var metricsExpandGroupOrder = S("metricsExpandGroupOrder");
 var metricsEffectiveHidden = S("metricsEffectiveHidden");
+var metricsReadList = S("metricsReadList");
 var metricsGroupRuns = S("metricsGroupRuns");
-var MODES = S("MODES");
-var MODE_LABELS = S("MODE_LABELS");
-var PAIR_KINDS = S("PAIR_KINDS");
-var normalizeMode = S("normalizeMode");
-var nextMode = S("nextMode");
-var buildStripCells = S("buildStripCells");
-var stripCells = S("stripCells");
+var LOAD_GROUPS = S("LOAD_GROUPS");
+var nextLoad = S("nextLoad");
+var cycleLoadPatch = S("cycleLoadPatch");
+var groupCells = S("groupCells");
+var groupStripCells = S("groupStripCells");
+var placeholderCell = S("placeholderCell");
 var tooltip = S("tooltip");
-var tooltipJoined = S("tooltipJoined");
 var tooltipFor = S("tooltipFor");
 var DEFAULTS = S("DEFAULTS");
 var adoptPrefs = S("adoptPrefs");
@@ -211,40 +209,36 @@ approx(tempSeverity(50, 40, 60), 0.5, 0.0001, "temp custom thresholds");
   eq(part.load, null, "parse partial missing load is null");
   eq(part.gpu_detail, null, "parse partial missing gpu_detail is null");
   eq(part.schema, 2, "parse keeps schema version default");
+  eq(part.gpu_source, null, "parse partial missing gpu_source is null");
+  deepEq(part.gpu_sources, [], "parse partial missing gpu_sources is empty");
 
   var full = parse(JSON.stringify({
     schema: 1,
     cpu: 12,
     temp: 45,
-    mem: 16,
-    gpu: 23,
-    gpu_temp: 61,
     fans: [{ id: "thinkpad/fan1", chip: "thinkpad", label: "fan1", rpm: 2262 }],
-    cpu_mhz: 3200,
-    gpu_mhz: 1500,
-    mem_used_kib: 9500000,
-    mem_total_kib: 64000000,
-    swap_used_kib: 0,
-    swap_total_kib: 8000000,
-    cpu_model: "AMD Ryzen 7",
-    cpu_cores: 16,
     load: { one: 0.42, five: 0.5, fifteen: 0.55 },
-    gpu_detail: { vram_used_b: 1000000, vram_total_b: 8000000, watts: 45 }
+    gpu_detail: { vram_used_b: 1000000, vram_total_b: 8000000, watts: 45 },
+    gpu_source: "amd",
+    gpu_sources: ["amd", "intel", 3, ""],
+    net: { iface: "wlan0", ifaces: ["wlan0", "eth0", null], down_bps: 10, up_bps: 20 },
+    disk: { mount: "/", mounts: ["/", "/boot"], used_pct: 63, used_b: 300, total_b: 500, read_bps: 1, write_bps: 2 }
   }));
   eq(full.cpu, 12, "parse full cpu");
   eq(full.temp, 45, "parse full temp");
-  eq(full.fans.length, 1, "parse full one fan");
   eq(full.fans[0].rpm, 2262, "parse full fan rpm");
   eq(full.load.one, 0.42, "parse load.one");
   eq(full.gpu_detail.watts, 45, "parse gpu_detail watts");
+  eq(full.gpu_source, "amd", "parse gpu_source");
+  deepEq(full.gpu_sources, ["amd", "intel"], "parse gpu_sources keeps only non-empty strings");
+  deepEq(full.net.ifaces, ["wlan0", "eth0"], "parse net interfaces");
+  deepEq(full.disk.mounts, ["/", "/boot"], "parse disk mounts");
+  eq(full.disk.used_b + "/" + full.disk.total_b, "300/500", "parse disk bytes");
 
   var badLoad = parse('{"load": "garbage", "gpu_detail": 42}');
   eq(badLoad.load, null, "parse bad load becomes null");
   eq(badLoad.gpu_detail, null, "parse bad gpu_detail becomes null");
-
-  var emptyDetail = parse('{"gpu_detail": {}}');
-  eq(emptyDetail.gpu_detail, null, "parse empty gpu_detail becomes null");
-
+  eq(parse('{"gpu_detail": {}}').gpu_detail, null, "parse empty gpu_detail becomes null");
   var partialLoad = parse('{"load": {"one": 1.5}}');
   eq(partialLoad.load.one, 1.5, "parse partial load keeps one");
   eq(partialLoad.load.five, null, "parse partial load fills five with null");
@@ -254,9 +248,7 @@ approx(tempSeverity(50, 40, 60), 0.5, 0.0001, "temp custom thresholds");
   ok(hasReading(parse("garbage")) === false, "hasReading false for garbage parse");
   ok(hasReading(null) === false, "hasReading false for null");
 
-  // mergeReading: one-time grace after a deliberate collector restart —
-  // a freshly-primed null cpu/gpu borrows the previous reading's value;
-  // every other field always comes from the new reading as-is.
+  // mergeReading: one-time grace after a deliberate collector restart.
   var before = parse(JSON.stringify({ cpu: 42, gpu: 17, temp: 40, mem: 50 }));
   var justRestarted = parse(JSON.stringify({ cpu: null, gpu: null, temp: 41, mem: 51 }));
   var merged = mergeReading(before, justRestarted);
@@ -264,57 +256,40 @@ approx(tempSeverity(50, 40, 60), 0.5, 0.0001, "temp custom thresholds");
   eq(merged.gpu, 17, "mergeReading borrows previous gpu when the new one is still priming");
   eq(merged.temp, 41, "mergeReading never touches non-primed fields");
   eq(merged.mem, 51, "mergeReading never touches non-primed fields (mem)");
-
-  // mergeReading itself is pure and stateless — it merges whatever pair
-  // it's given every time. The "only once per restart" guarantee comes
-  // from the caller (BarWidget.qml only merges while its own
-  // primingAfterRestart flag is set, clearing it right after), not from
-  // this function refusing a second call.
   var stillNull = parse(JSON.stringify({ cpu: null, gpu: null, temp: 41, mem: 51 }));
   eq(mergeReading(stillNull, stillNull).cpu, null, "mergeReading has nothing to borrow when the previous reading was already null");
-
   eq(mergeReading(null, justRestarted), justRestarted, "mergeReading with no previous reading returns the new one untouched");
   eq(mergeReading(before, null), null, "mergeReading null-safe on the new reading");
 })();
 
 // ---------- fanLabels ----------
 (function testFans() {
-  var fans = [
+  var labels = fanLabels([
     { id: "a/fan1", chip: "a", label: "fan1", rpm: 1000 },
     { id: "b/fan1", chip: "b", label: "fan1", rpm: 2000 },
     { id: "c/fan2", chip: "c", label: "fan2", rpm: 3000 }
-  ];
-  var labels = fanLabels(fans);
+  ]);
   eq(labels[0], "fan1 (a)", "duplicate fan label gets chip suffix");
   eq(labels[1], "fan1 (b)", "duplicate fan label gets chip suffix second");
   eq(labels[2], "fan2", "unique fan label has no suffix");
   eq(labels["a/fan1"], "fan1 (a)", "fanLabels maps id to display label");
-
-  var uniq = fanLabels([
-    { id: "x/fan1", chip: "x", label: "fan1", rpm: 1 },
-    { id: "y/fan2", chip: "y", label: "fan2", rpm: 2 }
-  ]);
-  eq(uniq[0], "fan1", "all-unique labels unchanged");
-  eq(uniq[1], "fan2", "all-unique labels unchanged second");
-
   var missing = fanLabels([{ id: "z/fan1", chip: "z", label: null, rpm: 5 }]);
   ok(typeof missing[0] === "string" && missing[0].length > 0, "missing label defaults to non-empty Fan N");
 })();
 
 // ---------- metrics ----------
-// metrics(reading, groupModes, prefs): groupModes carries each device's
-// already-resolved mode (only cpu/gpu matter, for the clocks option);
-// prefs is read directly (prefs.groups.<id>.*, prefs.warnUsage, etc) with
-// defensive fallbacks everywhere a field is missing, so tests can pass
-// minimal ad-hoc shapes without going through adoptPrefs.
+// metrics(reading, prefs): prefs is read directly (prefs.groups.<id>.*)
+// with defensive fallbacks everywhere a field is missing.
 function sampleReading() {
   return parse(JSON.stringify({
-    schema: 1,
+    schema: 2,
     cpu: 12,
     temp: 46,
     mem: 16,
     gpu: 23,
     gpu_temp: 61,
+    gpu_source: "amd",
+    gpu_sources: ["amd"],
     fans: [{ id: "thinkpad/fan1", chip: "thinkpad", label: "fan1", rpm: 2262 }],
     cpu_mhz: 3200,
     gpu_mhz: 1500,
@@ -325,7 +300,9 @@ function sampleReading() {
     cpu_model: "AMD Ryzen 7",
     cpu_cores: 16,
     load: { one: 0.42, five: 0.5, fifteen: 0.55 },
-    gpu_detail: { vram_used_b: 2147483648, vram_total_b: 8589934592, watts: 45 }
+    gpu_detail: { vram_used_b: 2147483648, vram_total_b: 8589934592, watts: 45 },
+    net: { iface: "wlan0", ifaces: ["wlan0", "eth0"], down_bps: 1258291, up_bps: 348160 },
+    disk: { mount: "/", mounts: ["/", "/boot"], used_pct: 63, used_b: 322122547200, total_b: 536870912000, read_bps: 40960, write_bps: 12288 }
   }));
 }
 
@@ -339,411 +316,388 @@ function byKey(list, key) {
   return null;
 }
 
+// Adopted defaults with some fields of one group replaced.
+function prefsWith(id, fields) {
+  var p = adoptPrefs({});
+  for (var k in fields) {
+    p.groups[id][k] = fields[k];
+  }
+  return p;
+}
+
 (function testMetrics() {
   var r = sampleReading();
-  var all = metricsFn(r, {}, { warnUsage: 70, critUsage: 90, warnTemp: 75, critTemp: 90 });
-  var keys = all.map(function (m) { return m.key; });
-  deepEq(keys, ["cpu_usage", "cpu_temp", "gpu_usage", "gpu_temp", "mem_usage", "fan:thinkpad/fan1"], "metrics default order with keys from spec");
+  var all = metricsFn(r, {});
+  deepEq(all.map(function (m) { return m.key; }), [
+    "cpu_usage", "cpu_temp", "cpu_avg",
+    "gpu_usage", "gpu_temp", "gpu_vram", "gpu_power",
+    "mem_usage", "mem_swap",
+    "net_down", "net_up",
+    "disk_usage", "disk_read", "disk_write",
+    "fan:thinkpad/fan1"
+  ], "every reading becomes a metric, in bar order");
 
   var cpuTemp = byKey(all, "cpu_temp");
   eq(cpuTemp.bar, "46°", "temp bar drops unit letter");
   eq(cpuTemp.value, "46 °C", "temp menu value keeps unit");
+  eq(cpuTemp.unit, "C", "a temp carries its unit letter");
+  eq(cpuTemp.glyph, GLYPH.temp, "a temp carries its thermometer");
+  eq(cpuTemp.groupGlyph, GLYPH.cpu, "a temp's cell label is its group's glyph");
+  eq(byKey(metricsFn(r, { unit: "F" }), "cpu_temp").bar, "115°", "temp bar F conversion without letter");
 
-  var f = metricsFn(r, {}, { unit: "F" });
-  var cpuTempF = byKey(f, "cpu_temp");
-  eq(cpuTempF.bar, "115°", "temp bar F conversion without letter");
-  eq(cpuTempF.value, "115 °F", "temp value F conversion with unit");
+  var avg = byKey(all, "cpu_avg");
+  eq(avg.bar, "0.42 0.50 0.55", "load average bar");
+  eq(avg.one + "/" + avg.five + "/" + avg.fifteen, "0.42/0.50/0.55", "each load window");
+  eq(avg.value, "0.42 · 0.50 · 0.55", "load average menu value");
 
-  var clocked = metricsFn(r, { cpu: "digits" }, { groups: { cpu: { showClocks: true } } });
-  var cpuUsage = byKey(clocked, "cpu_usage");
-  eq(cpuUsage.bar, "12% 3.2G", "clocks appended short in bar");
-  eq(cpuUsage.value, "12 % · 3.2 GHz", "clocks appended long in menu");
+  var vram = byKey(all, "gpu_vram");
+  eq(vram.bar, "25%", "VRAM percentage");
+  eq(vram.gib, "2.0/8.0G", "VRAM GiB pair");
+  approx(vram.ratio, 0.25, 1e-9, "VRAM ratio for the bar");
+  eq(byKey(all, "gpu_power").bar, "45W", "GPU power bar");
+  eq(byKey(all, "gpu_power").value, "45 W", "GPU power menu value");
 
-  var noClockGauge = metricsFn(r, { cpu: "gauges" }, { groups: { cpu: { showClocks: true } } });
-  var cpuUsageGauge = byKey(noClockGauge, "cpu_usage");
-  eq(cpuUsageGauge.bar, "12%", "clocks hidden when the CPU's own mode isn't digits");
+  var mem = byKey(all, "mem_usage");
+  eq(mem.bar, "16%", "memory percentage");
+  eq(mem.gib, "9.1/61G", "memory GiB pair");
+  eq(mem.value, "16 % · 9.1/61 GiB", "memory menu value carries both");
+  eq(byKey(metricsFn(parse(JSON.stringify({ mem_used_kib: 500000, mem_total_kib: 64000000 })), {}), "mem_usage").bar, "01%",
+    "memory percentage from KiB when the percentage is missing");
+  var swap = byKey(all, "mem_swap");
+  eq(swap.bar + " " + swap.gib, "00% 0.0/7.6G", "swap percentage and GiB");
 
-  var clockedGpu = metricsFn(r, { gpu: "digits" }, { groups: { gpu: { showClocks: true } } });
-  eq(byKey(clockedGpu, "gpu_usage").bar, "23% 1.5G", "GPU clocks are independent of the CPU's own showClocks");
+  eq(byKey(all, "net_down").bar + " " + byKey(all, "net_up").bar, "1.2M 340K", "net rates");
+  eq(byKey(all, "net_down").glyph, GLYPH.down, "net down carries its arrow");
+  eq(byKey(all, "net_down").iface, "wlan0", "net metrics carry their interface");
 
-  var gib = metricsFn(parse(JSON.stringify({
-    cpu: null, temp: null, mem: 16, gpu: null, gpu_temp: null, fans: [],
-    mem_used_kib: 9500000, mem_total_kib: 64000000
-  })), {}, { groups: { mem: { ramFormat: "used" } } });
-  var memUsed = byKey(gib, "mem_usage");
-  ok(memUsed !== null, "GiB memory metric exists");
-  eq(memUsed.bar, "9.1/61G", "GiB pair with one decimal under 10");
+  var disk = byKey(all, "disk_usage");
+  eq(disk.bar + " " + disk.gib, "63% 300/500G", "disk used percentage and GiB");
+  eq(disk.label, "Disk used", "disk space is labelled used, not load");
+  eq(byKey(all, "disk_read").bar + " " + byKey(all, "disk_write").bar, "40K 12K", "disk read and write, apart");
+  eq(byKey(all, "disk_read").glyph + byKey(all, "disk_write").glyph, "RW", "disk rates carry R and W tags");
 
-  var fallback = metricsFn(parse(JSON.stringify({ mem: 16, fans: [] })), {}, { groups: { mem: { ramFormat: "used" } } });
-  var memFall = byKey(fallback, "mem_usage");
-  eq(memFall.bar, "16%", "GiB fallback to percent when KiB missing");
+  // The clock is its own field whenever the group's clock part shows.
+  var clocked = metricsFn(r, { groups: { cpu: { clock: { show: true } } } });
+  eq(byKey(clocked, "cpu_usage").bar, "12%", "usage bar keeps only the digits");
+  eq(byKey(clocked, "cpu_usage").clock, "3.2G", "clock short form in its own field");
+  eq(byKey(clocked, "cpu_usage").value, "12 % · 3.2 GHz", "clock long form appended in menu");
+  eq(byKey(all, "cpu_usage").clock, null, "no clock unless the group asks");
 
-  var pct = metricsFn(r, {}, { groups: { mem: { ramFormat: "percent" } } });
-  eq(byKey(pct, "mem_usage").bar, "16%", "percent memory default");
+  eq(byKey(all, "cpu_usage").word, "CPU", "word label is the group's short name");
+  eq(byKey(all, "mem_usage").word, "RAM", "RAM word label");
 
-  var stopped = metricsFn(parse(JSON.stringify({
-    fans: [{ id: "a/fan1", chip: "a", label: "fan1", rpm: 0 }]
-  })), {}, {});
-  eq(stopped.length, 1, "stopped fan still listed");
-  eq(stopped[0].bar, "0", "stopped fan bar shows 0");
-  eq(stopped[0].value, "stopped", "stopped fan menu shows stopped");
-  eq(stopped[0].dim, true, "stopped fan dim flag");
-  eq(stopped[0].severity, 0, "stopped fan never warms");
-
-  var bare = metricsFn(r, {}, {});
-  var fan = byKey(bare, "fan:thinkpad/fan1");
-  eq(fan.bar, "2262", "fans bare RPM by default");
+  // Fans: their own names, their own RPM alerts, stopped ones dimmed.
+  var fan = byKey(all, "fan:thinkpad/fan1");
+  eq(fan.bar, "2262", "fans draw bare RPM; the unit is a piece");
   eq(fan.value, "2262 RPM", "fan menu value carries RPM");
-  var withRpm = metricsFn(r, {}, { groups: { fan: { showRpm: true } } });
-  eq(byKey(withRpm, "fan:thinkpad/fan1").bar, "2262 RPM", "fans carry RPM when toggled");
+  eq(fan.word, "fan1", "a fan's word is its own label");
+  eq(fan.severity, 0, "a fan under its warn RPM stays cool");
+  var named = byKey(metricsFn(r, { groups: { fan: { names: { "fan:thinkpad/fan1": "CPU fan" } } } }), "fan:thinkpad/fan1");
+  eq(named.label + "/" + named.word + "/" + named.autoLabel, "CPU fan/CPU fan/fan1", "a fan's own name wins over its label");
+  approx(byKey(metricsFn(r, { groups: { fan: { warnRpm: 2000, critRpm: 2524 } } }), "fan:thinkpad/fan1").severity, 0.5, 1e-9,
+    "a fan warms on its own RPM thresholds");
+  var stopped = metricsFn(parse(JSON.stringify({ fans: [{ id: "a/fan1", chip: "a", label: "fan1", rpm: 0 }] })), {});
+  eq(stopped[0].bar + "/" + stopped[0].value + "/" + stopped[0].dim + "/" + stopped[0].severity, "0/stopped/true/0",
+    "a stopped fan draws 0, reads stopped, dims and never warms");
 
-  var hot = metricsFn(parse(JSON.stringify({ cpu: 95, temp: 95 })), {}, { warnUsage: 70, critUsage: 90, warnTemp: 75, critTemp: 90 });
-  eq(byKey(hot, "cpu_usage").severity, 1, "usage severity hits 1 at crit");
-  eq(byKey(hot, "cpu_temp").severity, 1, "temp severity hits 1 at crit");
-  var cool = metricsFn(parse(JSON.stringify({ cpu: 10, temp: 40 })), {}, {});
-  eq(byKey(cool, "cpu_usage").severity, 0, "usage severity 0 below warn");
-  eq(byKey(cool, "cpu_temp").severity, 0, "temp severity 0 below warn");
+  // Thresholds are per group, with 70/90 % and 75/90 ° when missing.
+  var hotReading = parse(JSON.stringify({ cpu: 95, temp: 95, gpu: 95, gpu_temp: 95 }));
+  eq(byKey(metricsFn(hotReading, {}), "cpu_temp").severity, 1, "temp severity hits 1 at crit");
+  var tuned = metricsFn(hotReading, { groups: { gpu: { warnTemp: 75, critTemp: 100 }, cpu: { warnUsage: 90, critUsage: 100 } } });
+  approx(byKey(tuned, "gpu_temp").severity, 0.8, 1e-9, "a GPU with a higher crit warms less at the same temp");
+  approx(byKey(tuned, "cpu_usage").severity, 0.5, 1e-9, "the CPU's own usage thresholds apply");
 
-  // Usage percentages zero-pad under 10% so the leading digit's width is
-  // stable, and report how many of those leading characters are padding.
-  var single = metricsFn(parse(JSON.stringify({ cpu: 3, mem: 6 })), {}, {});
-  eq(byKey(single, "cpu_usage").bar, "03%", "cpu usage pads under 10%");
-  eq(byKey(single, "cpu_usage").padLen, 1, "cpu usage reports one padding char under 10%");
-  eq(byKey(single, "mem_usage").bar, "06%", "mem usage pads under 10%");
-  eq(byKey(single, "mem_usage").padLen, 1, "mem usage reports one padding char under 10%");
-  var double = metricsFn(parse(JSON.stringify({ cpu: 45 })), {}, {});
-  eq(byKey(double, "cpu_usage").bar, "45%", "cpu usage at/above 10% is not padded");
-  eq(byKey(double, "cpu_usage").padLen, 0, "cpu usage reports no padding at/above 10%");
-  var gpuSingle = metricsFn(parse(JSON.stringify({ gpu: 4 })), {}, {});
-  eq(byKey(gpuSingle, "gpu_usage").padLen, 1, "gpu usage pads the same way");
-  var memGib = metricsFn(parse(JSON.stringify({ mem_used_kib: 500000, mem_total_kib: 64000000 })), {}, { groups: { mem: { ramFormat: "used" } } });
-  eq(byKey(memGib, "mem_usage").padLen, 0, "GiB-format memory is never treated as padded (not a plain percentage)");
+  var single = metricsFn(parse(JSON.stringify({ cpu: 3 })), {});
+  eq(byKey(single, "cpu_usage").bar + "/" + byKey(single, "cpu_usage").padLen, "03%/1", "usage pads under 10% and reports the pad");
 
-  ok(GLYPH.cpu && GLYPH.temp && GLYPH.gpu && GLYPH.mem && GLYPH.fan, "GLYPH map has all five entries");
-  ok(PLACEHOLDER && PLACEHOLDER.key === "placeholder", "PLACEHOLDER present");
+  ok(GLYPH.cpu && GLYPH.temp && GLYPH.gpu && GLYPH.mem && GLYPH.fan && GLYPH.down && GLYPH.up, "GLYPH map has every glyph");
   deepEq(GROUP_LABELS, { cpu: "CPU", gpu: "GPU", mem: "RAM", net: "Net", disk: "Disk", fan: "Fans" }, "GROUP_LABELS short English names");
   eq(migrateKey("cpu"), "cpu_usage", "migrateKey cpu");
-  eq(migrateKey("temp"), "cpu_temp", "migrateKey temp");
-  eq(migrateKey("mem"), "mem_usage", "migrateKey mem");
   eq(migrateKey("cpu_usage"), "cpu_usage", "migrateKey passthrough");
 })();
 
-// ---------- ordering ----------
+// ---------- ordering and visibility ----------
 (function testOrdering() {
   var r = sampleReading();
-  var all = metricsFn(r, {}, {});
+  var all = metricsFn(r, {});
   var reordered = orderKeys(all, ["mem_usage", "cpu_usage"]);
-  eq(reordered[0].key, "mem_usage", "orderKeys honors user order first");
-  eq(reordered[1].key, "cpu_usage", "orderKeys honors user order second");
+  eq(reordered[0].key + "," + reordered[1].key, "mem_usage,cpu_usage", "orderKeys honors user order first");
   eq(reordered.length, all.length, "orderKeys keeps all metrics");
-  eq(reordered[2].key, "cpu_temp", "orderKeys appends unknown keys in default order");
-
-  var ignored = orderKeys(all, ["nope", "cpu_temp"]);
-  eq(ignored[0].key, "cpu_temp", "orderKeys ignores unknown order entries");
-  ok(ignored.length === all.length, "orderKeys length stable with unknown entries");
-
-  var visible = shown(all, ["cpu_temp"]);
-  ok(visible.every(function (m) { return m.key !== "cpu_temp"; }), "shown filters hidden");
-  eq(shown(all, []).length, all.length, "shown empty hidden keeps all");
-  ok(isHidden("cpu_temp", ["cpu_temp"]) === true, "isHidden direct");
   ok(isHidden("cpu_usage", ["cpu"]) === true, "isHidden migrates legacy keys");
-  ok(isHidden("cpu_usage", []) === false, "isHidden false when not hidden");
 
-  // Group-order expansion: reusable directly with orderKeys().
-  var expanded = metricsExpandGroupOrder(["mem", "cpu"], null);
-  deepEq(expanded, ["mem_usage", "cpu_usage", "cpu_temp"], "metricsExpandGroupOrder expands kinds per group in order");
-  var withFans = metricsExpandGroupOrder(["fan", "cpu"], ["fan:b", "fan:a"]);
-  deepEq(withFans, ["fan:b", "fan:a", "cpu_usage", "cpu_temp"], "metricsExpandGroupOrder uses the fan sub-order verbatim");
-  deepEq(metricsExpandGroupOrder(["fan"], null), [], "metricsExpandGroupOrder with no fan order yields nothing (orderKeys appends unknowns)");
+  deepEq(metricsExpandGroupOrder(["mem", "cpu"], null), ["mem_usage", "mem_swap", "cpu_usage", "cpu_temp", "cpu_avg"],
+    "metricsExpandGroupOrder expands every kind of a group in order");
+  deepEq(metricsExpandGroupOrder(["fan", "disk"], ["fan:b"]), ["fan:b", "disk_usage", "disk_read", "disk_write"],
+    "fans follow their own order; disk expands to used, read, write");
 
-  var groupOrdered = orderKeys(all, metricsExpandGroupOrder(["mem", "gpu", "cpu", "fan"], null));
-  deepEq(groupOrdered.map(function (m) { return m.key; }),
-    ["mem_usage", "gpu_usage", "gpu_temp", "cpu_usage", "cpu_temp", "fan:thinkpad/fan1"],
-    "orderKeys + metricsExpandGroupOrder reproduces a full group reorder");
+  var defaults = adoptPrefs({});
+  deepEq(metricsEffectiveHidden(all, defaults),
+    ["cpu_avg", "gpu_vram", "gpu_power", "mem_swap", "net_down", "net_up", "disk_usage", "disk_read", "disk_write"],
+    "by default the extra readings are off and Net and Disk start disabled");
 
-  // Effective hidden derived from prefs.groups.
-  var prefsAllOn = adoptPrefs({});
-  eq(metricsEffectiveHidden(all, prefsAllOn).length, 0, "effectiveHidden empty when every group enabled");
+  function hiddenWith(id, fields) {
+    return metricsEffectiveHidden(all, prefsWith(id, fields)).filter(function (k) { return k.indexOf(id) === 0; });
+  }
+  deepEq(hiddenWith("cpu", { temp: { icon: true, value: false } }), ["cpu_temp", "cpu_avg"], "a temp without its value draws nothing");
+  deepEq(hiddenWith("cpu", { load: { bar: false, number: false } }), ["cpu_usage", "cpu_avg"], "no bar and no number hides the usage");
+  deepEq(hiddenWith("cpu", { load: { bar: false, number: false }, clock: { show: true } }), ["cpu_avg"], "the clock keeps the usage metric");
+  deepEq(hiddenWith("cpu", { avg: { five: true } }), [], "one load window is enough to show the average");
+  deepEq(hiddenWith("gpu", { vram: { gib: true }, power: { show: true } }), [], "VRAM and power switch on alone");
+  deepEq(hiddenWith("net", { enabled: true, up: { icon: true, value: false } }), ["net_up"], "net up without its value is hidden");
+  deepEq(hiddenWith("disk", { enabled: true, read: { value: false } }), ["disk_read"], "disk read hides on its own");
 
-  var prefsMemOff = adoptPrefs({});
-  prefsMemOff.groups.mem.enabled = false;
-  deepEq(metricsEffectiveHidden(all, prefsMemOff), ["mem_usage"], "effectiveHidden hides a disabled group's only metric");
+  var stoppedFans = metricsFn(parse(JSON.stringify({ fans: [
+    { id: "a/fan1", chip: "a", label: "fan1", rpm: 0 }, { id: "a/fan2", chip: "a", label: "fan2", rpm: 900 }
+  ] })), {});
+  deepEq(metricsEffectiveHidden(stoppedFans, prefsWith("fan", { showStopped: false })), ["fan:a/fan1"], "stopped fans can hide themselves");
+  deepEq(metricsEffectiveHidden(stoppedFans, prefsWith("fan", { showStopped: true })), [], "stopped fans show by default");
+  deepEq(metricsEffectiveHidden(stoppedFans, prefsWith("fan", { hidden: ["fan:a/fan2"] })), ["fan:a/fan2"], "a fan hides by its id");
 
-  var prefsCpuSplit = adoptPrefs({});
-  prefsCpuSplit.groups.cpu.showTemp = false;
-  deepEq(metricsEffectiveHidden(all, prefsCpuSplit), ["cpu_temp"], "effectiveHidden hides just one sub-toggle, not the whole group");
+  deepEq(metricsReadList(defaults), ["cpu", "temp", "gpu", "mem", "load", "fans"],
+    "by default the collector skips the clock, Net and Disk");
+  function reads(id, fields) {
+    return metricsReadList(prefsWith(id, fields));
+  }
+  deepEq(reads("cpu", { enabled: false }), ["gpu", "mem", "fans"], "a group switched off is not read");
+  ok(reads("cpu", { temp: { icon: true, value: false } }).indexOf("temp") < 0, "a temp that draws nothing is not read");
+  ok(reads("cpu", { clock: { show: true } }).indexOf("clocks") >= 0, "the clock is read while it shows");
+  var ioOnly = reads("disk", { enabled: true, used: { bar: false, percent: false, gib: false }, write: { value: false } });
+  ok(ioOnly.indexOf("io") >= 0 && ioOnly.indexOf("disk") < 0, "disk read alone reads the I/O, not the space");
+  ok(reads("fan", { rpm: { value: false } }).indexOf("fans") < 0, "fans without a value are not read");
+  deepEq(metricsReadList(adoptPrefs({ groups: { cpu: { enabled: false }, gpu: { enabled: false },
+    mem: { enabled: false }, fan: { enabled: false } } })), [], "everything off reads nothing");
 
-  var prefsFanHidden = adoptPrefs({});
-  prefsFanHidden.groups.fan.hidden = ["fan:thinkpad/fan1"];
-  deepEq(metricsEffectiveHidden(all, prefsFanHidden), ["fan:thinkpad/fan1"], "effectiveHidden respects the fan group's own hidden list");
-
-  // Contiguous per-device runs, the shared clustering both the bar and
-  // the menu build their per-group view from.
   var runs = metricsGroupRuns(all);
-  deepEq(runs.map(function (r) { return r.device; }), ["cpu", "gpu", "mem", "fan"], "metricsGroupRuns clusters by device in order");
-  eq(runs[0].items.length, 2, "metricsGroupRuns keeps cpu's two metrics together");
+  deepEq(runs.map(function (x) { return x.device; }), ["cpu", "gpu", "mem", "net", "disk", "fan"], "metricsGroupRuns clusters by device in order");
 })();
 
-// ---------- modes ----------
-(function testModes() {
-  deepEq(MODES, ["digits", "gauges"], "MODES list: Number and Bar, no separate joined mode");
-  eq(MODE_LABELS.digits, "Number", "MODE_LABELS digits label");
-  eq(MODE_LABELS.gauges, "Bar", "MODE_LABELS gauges label");
-  eq(normalizeMode("gauges"), "gauges", "normalizeMode keeps valid");
-  eq(normalizeMode("bogus"), "digits", "normalizeMode defaults");
-  eq(nextMode("digits"), "gauges", "nextMode digits to gauges");
-  eq(nextMode("gauges"), "digits", "nextMode gauges wraps back to digits");
-  deepEq(PAIR_KINDS.net, { first: "down", second: "up" }, "PAIR_KINDS declares net's down+up pairing");
-  deepEq(PAIR_KINDS.disk, { first: "usage", second: "io" }, "PAIR_KINDS declares disk's usage+io pairing");
-
+// ---------- cells ----------
+(function testCells() {
   var r = sampleReading();
-  var all = metricsFn(r, {}, {});
-  var visible = shown(all, []);
 
-  function findCell(cells, key) {
-    var k = 0;
-    for (k = 0; k < cells.length; k++) {
-      if (cells[k].key === key) {
-        return cells[k];
-      }
-    }
-    return null;
+  // Cells come from the metrics of the same prefs, as on the bar.
+  function cellsOf(prefs, id, reading, vertical) {
+    var all = metricsFn(reading || r, prefs);
+    var items = shown(all, []).filter(function (m) { return m.device === id; });
+    return groupCells(items, prefs, id, vertical);
   }
+  function cellOf(prefs, id, reading, vertical) {
+    return cellsOf(prefs, id, reading, vertical)[0];
+  }
+  function texts(cell) {
+    return cell.pieces.map(function (p) { return p.kind === "gauge" ? "#" : p.text; }).join("|");
+  }
+  function gaps(cell) {
+    return cell.pieces.map(function (p) { return p.gap; }).join(",");
+  }
+  var d = adoptPrefs({});
 
-  // Pairing is unconditional in BOTH modes now: cpu usage+temp and gpu
-  // usage+temp always join, whether the mode is Number or Bar. mem and
-  // fan have no pair partner, so they stay lone cells either way.
-  var digits = buildStripCells(visible, "digits", { showDigits: true, wordLabels: false });
-  eq(digits.length, 4, "Number mode still joins pairs: cpu+gpu joined, mem+fan lone (4 cells for 6 metrics)");
-  var joinedCpuDigits = findCell(digits, "cpu_usage+cpu_temp");
-  ok(joinedCpuDigits !== null && joinedCpuDigits.cell === "joined", "cpu usage+temp join even in Number mode");
-  eq(joinedCpuDigits.gaugeFirst, false, "Number mode's joined cell doesn't gauge its first half");
-  eq(joinedCpuDigits.bare, false, "joined cell defaults to bare false (icon, not word)");
-  ok(digits.every(function (c) { return c.cell !== "gauge"; }), "Number mode never produces a bare gauge cell");
+  var cpu = cellOf(d, "cpu");
+  eq(cpu.key + "/" + cpu.device, "cpu/cpu", "a group's cell is keyed by the group");
+  eq(texts(cpu), GLYPH.cpu + "|12%|46°", "default CPU: icon, number, temp");
+  eq(gaps(cpu), "none,tight,part", "an icon hugs the load; the temp is a new part");
+  deepEq(cpu.metrics.map(function (m) { return m.key; }), ["cpu_usage", "cpu_temp", "cpu_avg"], "the cell carries its metrics for the tooltip");
+  eq(texts(cellOf(d, "gpu")), GLYPH.gpu + "|23%|61°", "default GPU");
+  eq(texts(cellOf(d, "mem")), "RAM|16%", "default RAM: a word and a number");
+  eq(gaps(cellOf(d, "mem")), "none,part", "a word is its own part");
+  var net = cellOf(d, "net");
+  eq(texts(net), GLYPH.net + "|" + GLYPH.down + "|1.2M|" + GLYPH.up + "|340K", "default Net: each rate after its arrow");
+  eq(gaps(net), "none,tight,tight,part,tight", "each arrow hugs its rate; up is a new part");
+  eq(texts(cellOf(d, "disk")), GLYPH.disk + "|63%|R|40K|W|12K", "default Disk: used, then tagged read and write");
+  eq(texts(cellOf(d, "fan")), GLYPH.fan + "|2262", "default fan");
 
-  var words = buildStripCells(visible, "digits", { showDigits: true, wordLabels: true });
-  eq(findCell(words, "mem_usage").bare, true, "wordLabels sets bare on a lone (non-joined) metric cell");
-  eq(findCell(digits, "mem_usage").bare, false, "digits without words has bare false");
-  var joinedCpuWords = findCell(words, "cpu_usage+cpu_temp");
-  eq(joinedCpuWords.bare, true, "wordLabels also sets bare on a joined cell (icon never sneaks back in)");
-  eq(joinedCpuWords.gaugeFirst, false, "a word-labelled joined cell never gauges its usage half");
+  // Load: bar and number add up; both on draws both.
+  var bar = cellOf(prefsWith("cpu", { load: { bar: true, number: false } }), "cpu");
+  eq(texts(bar), GLYPH.cpu + "|#|46°", "load bar only");
+  approx(bar.pieces[1].ratio, 0.12, 1e-9, "the gauge carries the usage ratio");
+  var both = cellOf(prefsWith("cpu", { load: { bar: true, number: true } }), "cpu");
+  eq(texts(both), GLYPH.cpu + "|#|12%|46°", "bar and number both on: gauge then digits");
+  eq(gaps(both), "none,tight,tight,part", "a gauge hugs its own digits");
+  eq(texts(cellOf(prefsWith("cpu", { load: { bar: true, number: false } }), "cpu", null, true)), GLYPH.cpu + "|12%|46°",
+    "a vertical bar draws digits instead of a gauge");
 
-  var gauges = buildStripCells(visible, "gauges", { showDigits: true, wordLabels: false });
-  var joinedCpuGauges = findCell(gauges, "cpu_usage+cpu_temp");
-  ok(joinedCpuGauges !== null && joinedCpuGauges.cell === "joined", "cpu usage+temp still join in Bar mode");
-  eq(joinedCpuGauges.gaugeFirst, true, "Bar mode's joined cell gauges its first (usage) half");
-  eq(joinedCpuGauges.bare, false, "Bar mode without words keeps bare false");
-  var memGauge = findCell(gauges, "mem_usage");
-  eq(memGauge.cell, "gauge", "a lone usage-kind metric becomes a gauge cell in Bar mode");
-  eq(memGauge.withDigits, true, "gauge carries digits when showDigits");
-  var noDigits = buildStripCells(visible, "gauges", { showDigits: false, wordLabels: false });
-  eq(findCell(noDigits, "mem_usage").withDigits, false, "gauge without digits variant");
-  eq(findCell(gauges, "fan:thinkpad/fan1").cell, "metric", "a fan (not kind usage) never gauges");
+  // Label: icon and word add up too.
+  var iconWord = cellOf(prefsWith("cpu", { label: { icon: true, word: true } }), "cpu");
+  eq(texts(iconWord), GLYPH.cpu + "|CPU|12%|46°", "icon and word both on");
+  eq(gaps(iconWord), "none,tight,part,part", "the icon hugs the word; the word stands apart");
+  eq(texts(cellOf(prefsWith("cpu", { label: { icon: false, word: false } }), "cpu")), "12%|46°", "no label at all");
 
-  // A word-labelled group wins over Bar mode entirely: no icon+bar ever
-  // sneaks back in just because the mode is "gauges" (this is what makes
-  // "RAM" default to a word label safe regardless of the chosen mode).
-  var gaugeWords = buildStripCells(visible, "gauges", { showDigits: true, wordLabels: true });
-  var memGaugeWords = findCell(gaugeWords, "mem_usage");
-  eq(memGaugeWords.cell, "metric", "Bar mode + words: lone usage-kind stays a metric cell, not a gauge");
-  eq(memGaugeWords.bare, true, "Bar mode + words: lone usage-kind is bare (word label)");
-  var joinedCpuGaugeWords = findCell(gaugeWords, "cpu_usage+cpu_temp");
-  eq(joinedCpuGaugeWords.bare, true, "Bar mode + words: joined cell is still bare");
-  eq(joinedCpuGaugeWords.gaugeFirst, false, "Bar mode + words: joined cell still never gauges");
+  // Clock, temp and load average.
+  var clockOn = prefsWith("cpu", { clock: { show: true, quiet: false } });
+  eq(texts(cellOf(clockOn, "cpu")), GLYPH.cpu + "|12%|3.2G|46°", "the clock is its own part after the load");
+  var clockQuiet = prefsWith("cpu", { clock: { show: true, quiet: true } });
+  eq(cellOf(clockQuiet, "cpu").pieces[2].quiet, true, "a quiet clock draws muted");
+  var clockOnly = prefsWith("cpu", { load: { bar: false, number: false }, clock: { show: true } });
+  eq(texts(cellOf(clockOnly, "cpu")), GLYPH.cpu + "|3.2G|46°", "no load, but the clock stays");
+  var tempFull = cellOf(prefsWith("cpu", { temp: { icon: true, value: true, unit: true } }), "cpu");
+  eq(texts(tempFull), GLYPH.cpu + "|12%|" + GLYPH.temp + "|46°C", "thermometer, value and unit letter");
+  eq(gaps(tempFull), "none,tight,part,tight", "the thermometer hugs its temp");
+  eq(texts(cellOf(prefsWith("cpu", { temp: { icon: true, value: false } }), "cpu")), GLYPH.cpu + "|12%", "an icon never shows without its value");
+  eq(texts(cellOf(prefsWith("cpu", { avg: { one: true, fifteen: true } }), "cpu")), GLYPH.cpu + "|12%|46°|0.42 0.55", "the chosen load windows");
 
-  var loneReading = parse(JSON.stringify({ cpu: 12, temp: null, fans: [] }));
-  var loneMetrics = metricsFn(loneReading, {}, {});
-  var loneVisible = shown(loneMetrics, []);
-  var loneGauges = buildStripCells(loneVisible, "gauges", { showDigits: true, wordLabels: false });
-  eq(loneGauges.length, 1, "lone half falls back to a single cell");
-  eq(loneGauges[0].cell, "gauge", "lone usage half uses the gauge rule in Bar mode");
-  var loneDigits = buildStripCells(loneVisible, "digits", { showDigits: true, wordLabels: false });
-  eq(loneDigits[0].cell, "metric", "lone usage half uses the metric rule in Number mode");
-  var loneGaugeWords = buildStripCells(loneVisible, "gauges", { showDigits: true, wordLabels: true });
-  eq(loneGaugeWords[0].cell, "metric", "lone usage half (pair-first) also respects words over Bar mode");
-  eq(loneGaugeWords[0].bare, true, "lone usage half (pair-first) is bare when words is set");
+  // The leading zero: muted, plain, or dropped.
+  var low = parse(JSON.stringify({ cpu: 3, temp: 50 }));
+  var zq = cellOf(d, "cpu", low).pieces[1];
+  ok(zq.text === "03%" && zq.pad === 1 && zq.padQuiet === true, "zero quiet: the pad digit draws muted");
+  var zn = cellOf(prefsWith("cpu", { zero: { show: true, quiet: false } }), "cpu", low).pieces[1];
+  ok(zn.text === "03%" && zn.pad === 1 && zn.padQuiet === false, "zero regular: the pad digit takes the digits' color");
+  var zh = cellOf(prefsWith("cpu", { zero: { show: false, quiet: true } }), "cpu", low).pieces[1];
+  ok(zh.text === "3%" && zh.pad === 0, "zero off: the pad digit goes");
 
-  var loneTempReading = parse(JSON.stringify({ cpu: null, temp: 50, fans: [] }));
-  var loneTempMetrics = metricsFn(loneTempReading, {}, {});
-  var loneTempCells = buildStripCells(shown(loneTempMetrics, []), "gauges", { showDigits: true, wordLabels: false });
-  eq(loneTempCells[0].cell, "metric", "lone temp half never gauges, in either mode");
+  // Color: every reading warms by its own severity; quiet never warms.
+  var hot = parse(JSON.stringify({ cpu: 10, temp: 95 }));
+  var hotCell = cellOf(d, "cpu", hot);
+  eq(hotCell.pieces[1].severity + "/" + hotCell.pieces[2].severity + "/" + hotCell.pieces[0].severity, "0/1/1",
+    "a cool load stays cool beside a hot temp; the label warms with the hottest");
+  var quietTemp = cellOf(prefsWith("cpu", { temp: { value: true, quiet: true } }), "cpu", hot);
+  ok(quietTemp.pieces[2].quiet && quietTemp.severity === 0, "a quiet temp is muted and never warms its cell");
+  var quietLabel = cellOf(prefsWith("cpu", { label: { icon: true, quiet: true } }), "cpu", hot);
+  ok(quietLabel.pieces[0].quiet && quietLabel.pieces[0].severity === 0, "a quiet label stays muted even beside a hot temp");
+  var quietLoad = cellOf(prefsWith("cpu", { load: { bar: true, number: true, quiet: true } }), "cpu");
+  ok(quietLoad.pieces[1].quiet && quietLoad.pieces[2].quiet, "a quiet load mutes its gauge and its digits");
 
-  var allHidden = stripCells(all, all.map(function (m) { return m.key; }), "digits", { showDigits: true, wordLabels: false });
-  eq(allHidden.length, 1, "all hidden yields placeholder");
-  eq(allHidden[0].metric.key, "placeholder", "placeholder fallback metric");
+  // Space used: bar, percent and GiB add up; GiB is its own part.
+  var memBoth = cellOf(prefsWith("mem", { used: { percent: true, gib: true } }), "mem");
+  eq(texts(memBoth), "RAM|16%|9.1/61G", "percent and GiB both on");
+  eq(gaps(memBoth), "none,part,part", "two numbers never touch");
+  eq(texts(cellOf(prefsWith("mem", { used: { bar: true } }), "mem")), "RAM|#", "memory as a bar only");
+  eq(texts(cellOf(prefsWith("mem", { used: { bar: true, gib: true } }), "mem")), "RAM|#|9.1/61G", "bar and GiB");
+  eq(texts(cellOf(prefsWith("mem", { swap: { percent: true } }), "mem")), "RAM|16%|00%", "swap after memory");
+  eq(texts(cellOf(prefsWith("gpu", { vram: { bar: true, gib: true }, power: { show: true } }), "gpu")),
+    GLYPH.gpu + "|23%|61°|#|2.0/8.0G|45W", "VRAM bar and GiB, then power");
 
-  // The pairing table is data-driven, so a hand-built net/disk-shaped
-  // metric list joins exactly like cpu/gpu do.
-  var netDown = { key: "net_down", device: "net", kind: "down", label: "Net down", glyph: "", bar: "1.2M", value: "1.2 MB/s", severity: 0, dim: false };
-  var netUp = { key: "net_up", device: "net", kind: "up", label: "Net up", glyph: "", bar: "340K", value: "340 KB/s", severity: 0, dim: false };
-  var netJoined = buildStripCells([netDown, netUp], "gauges", { showDigits: true, wordLabels: false });
-  eq(netJoined.length, 1, "net down+up always join");
-  eq(netJoined[0].cell, "joined", "net pair becomes a joined cell");
-  eq(netJoined[0].usage.key, "net_down", "net joined cell's first slot is down");
-  eq(netJoined[0].temp.key, "net_up", "net joined cell's second slot is up");
-  // gaugeFirst just mirrors the mode here; MetricButton is what actually
-  // skips drawing a gauge when the metric has no numeric .ratio (down/up
-  // never do) — that's confirmed at the QML layer, not this one.
+  // Net and disk: each rate, each mark, each color on its own.
+  eq(texts(cellOf(prefsWith("net", { down: { icon: false, value: true }, up: { value: false } }), "net")), GLYPH.net + "|1.2M",
+    "net down without its arrow, up hidden");
+  eq(texts(cellOf(prefsWith("disk", { read: { tag: false, value: true } }), "disk")), GLYPH.disk + "|63%|40K|W|12K", "disk read without its tag");
+  eq(cellOf(prefsWith("disk", { write: { tag: true, value: true, quiet: true } }), "disk").pieces[5].quiet, true, "disk write can be quiet");
 
-  var diskUsage = { key: "disk_usage", device: "disk", kind: "usage", label: "Disk usage", glyph: "", bar: "63%", value: "63 %", severity: 0, dim: false, ratio: 0.63 };
-  var diskIo = { key: "disk_io", device: "disk", kind: "io", label: "Disk I/O", glyph: "", bar: "40K", value: "40 KB/s", severity: 0, dim: false };
-  var diskJoined = buildStripCells([diskUsage, diskIo], "digits", { showDigits: true, wordLabels: false });
-  eq(diskJoined.length, 1, "disk usage+io always join");
-  eq(diskJoined[0].usage.key, "disk_usage", "disk joined cell's first slot is usage (gaugeable, has .ratio)");
-  eq(diskJoined[0].gaugeFirst, false, "Number mode: disk joined cell doesn't gauge its usage half");
+  // Fans: RPM with or without its unit, each fan its own cell.
+  eq(texts(cellOf(prefsWith("fan", { rpm: { value: true, unit: true } }), "fan")), GLYPH.fan + "|2262 RPM", "RPM with its unit");
+  eq(texts(cellOf(prefsWith("fan", { label: { icon: false, word: true } }), "fan")), "fan1|2262", "a fan's word is its own label");
+  eq(cellOf(d, "fan").key, "fan:thinkpad/fan1", "a fan cell is keyed by the fan");
+
+  // A group with every reading off draws no cell, not a lonely label.
+  eq(cellsOf(prefsWith("cpu", { load: { bar: false, number: false }, temp: { value: false } }), "cpu").length, 0,
+    "no reading, no cell");
+  eq(groupCells([], d, "cpu").length, 0, "no metrics, no cell");
+
+  // Right-click: number, bar, both, number again.
+  var next = cycleLoadPatch(d, "cpu").load;
+  eq(next.bar + "/" + next.number, "true/false", "right-click: number to bar");
+  var third = nextLoad(next, "number");
+  eq(third.bar + "/" + third.number, "true/true", "right-click: bar to both");
+  var back = nextLoad(third, "number");
+  eq(back.bar + "/" + back.number, "false/true", "right-click: both back to number");
+  eq(nextLoad({ bar: false, number: false }, "number").number, true, "right-click brings a hidden load back as a number");
+  var memNext = cycleLoadPatch(d, "mem").used;
+  eq(memNext.bar + "/" + memNext.percent + "/" + memNext.gib, "true/false/false", "right-click on memory cycles its percentage");
+  eq(cycleLoadPatch(d, "net"), null, "net has no load to cycle");
+  deepEq(LOAD_GROUPS, ["cpu", "gpu", "mem", "disk"], "LOAD_GROUPS: the groups with a load");
+
+  var strip = groupStripCells(metricsGroupRuns(shown(metricsFn(r, d), [])), d, false);
+  deepEq(strip.map(function (c) { return c.key; }), ["cpu", "gpu", "mem", "net", "disk", "fan:thinkpad/fan1"], "one cell per group, one per fan");
+  var empty = groupStripCells([], d, false);
+  eq(empty.length + "/" + empty[0].key + "/" + empty[0].dim + "/" + texts(empty[0]), "1/placeholder/true/—", "no runs yields one dimmed placeholder");
+  deepEq(placeholderCell(), empty[0], "placeholderCell is the same cell");
 })();
 
 // ---------- tooltip ----------
 (function testTooltip() {
   var r = sampleReading();
-  var all = metricsFn(r, {}, {});
-  var cpuUsage = byKey(all, "cpu_usage");
-  var cpuTemp = byKey(all, "cpu_temp");
-  var gpuUsage = byKey(all, "gpu_usage");
-  var memMetric = byKey(all, "mem_usage");
+  var all = metricsFn(r, {});
+  var d = adoptPrefs({});
+  function cellFor(id) {
+    return groupCells(all.filter(function (m) { return m.device === id; }), d, id, false)[0];
+  }
 
-  var t = tooltip(cpuUsage, r, {});
+  var t = tooltip(byKey(all, "cpu_usage"), r);
   var lines = t.split("\n");
   eq(lines[0], "CPU usage: 12 %", "tooltip headline first");
-  ok(t.indexOf("AMD Ryzen 7") >= 0, "tooltip shows CPU model");
-  ok(t.indexOf("16 cores") >= 0, "tooltip shows core count");
-  ok(t.indexOf("Load") >= 0, "tooltip shows load average");
-  ok(t.indexOf("GHz") >= 0, "tooltip shows clocks");
+  ok(t.indexOf("AMD Ryzen 7 · 16 cores") >= 0, "tooltip shows CPU model and cores");
+  ok(t.indexOf("Load 0.42 0.50 0.55") >= 0, "tooltip shows load average");
+  ok(t.indexOf("3.2 GHz") >= 0, "tooltip shows the clock");
   ok(t.indexOf("null") < 0, "tooltip skips nulls silently");
 
-  var bare = tooltip(cpuUsage, null, {});
-  ok(bare.split("\n")[0].indexOf("CPU usage:") === 0, "tooltip without reading still headlines");
-
-  var g = tooltip(gpuUsage, r, {});
-  ok(g.indexOf("VRAM") >= 0, "tooltip shows VRAM");
-  ok(g.indexOf("45 W") >= 0, "tooltip shows watts");
-  ok(g.indexOf("GHz") >= 0, "tooltip shows GPU clock");
-
-  var memPct = tooltip(memMetric, r, { ramFormat: "percent" });
-  ok(memPct.indexOf("GiB") >= 0, "memory tooltip shows non-headline GiB format");
-  ok(memPct.indexOf("Swap") >= 0, "memory tooltip shows swap when known");
-
-  var memUsedMetric = byKey(metricsFn(r, {}, { groups: { mem: { ramFormat: "used" } } }), "mem_usage");
-  var memUsedTip = tooltip(memUsedMetric, r, { ramFormat: "used" });
-  ok(memUsedTip.indexOf("16 %") >= 0, "used headline tooltip shows percent detail");
-
-  var noSwap = tooltip(byKey(metricsFn(parse(JSON.stringify({ mem: 20, fans: [] })), {}, {}), "mem_usage"), parse(JSON.stringify({ mem: 20, fans: [] })), {});
-  ok(noSwap.indexOf("Swap") < 0, "tooltip skips swap when unknown");
-
-  var joined = tooltipJoined(cpuUsage, cpuTemp, r, {});
-  ok(joined.indexOf("CPU usage:") >= 0 && joined.indexOf("CPU temp:") >= 0, "joined tooltip shows both halves");
-
-  var cells = buildStripCells(shown(all, []), "gauges", { showDigits: true, wordLabels: false });
-  var joinedCell = null;
-  var q = 0;
-  for (q = 0; q < cells.length; q++) {
-    if (cells[q].cell === "joined") {
-      joinedCell = cells[q];
-      break;
-    }
-  }
-  var cellTip = tooltipFor(joinedCell, r, { ramFormat: "percent" });
-  ok(cellTip.indexOf("CPU usage:") >= 0, "tooltipFor joined dispatches");
-
-  var metricCell = { cell: "metric", key: cpuTemp.key, metric: cpuTemp, bare: false };
-  var singleTip = tooltipFor(metricCell, r, {});
-  ok(singleTip.indexOf("CPU temp:") === 0, "tooltipFor metric dispatches");
+  var cpuTip = tooltipFor(cellFor("cpu"), r);
+  ok(cpuTip.indexOf("CPU usage:") >= 0 && cpuTip.indexOf("CPU temp:") >= 0, "a CPU cell headlines every metric");
+  ok(cpuTip.indexOf("Load average: 0.42 · 0.50 · 0.55") >= 0, "the load average headlines once");
+  ok(cpuTip.indexOf("Load 0.42") < 0, "and never repeats as a detail line");
+  var gpuTip = tooltipFor(cellFor("gpu"), r);
+  ok(gpuTip.indexOf("Source amd") >= 0, "a GPU tooltip names its source");
+  ok(gpuTip.indexOf("GPU memory: 25 % · 2.0/8.0 GiB") >= 0, "a GPU tooltip shows VRAM");
+  ok(gpuTip.indexOf("GPU power: 45 W") >= 0, "a GPU tooltip shows power");
+  var memTip = tooltipFor(cellFor("mem"), r);
+  ok(memTip.indexOf("Memory used: 16 % · 9.1/61 GiB") === 0, "a memory tooltip shows both formats");
+  ok(memTip.indexOf("Swap: 0 % · 0.0/7.6 GiB") >= 0, "and swap");
+  ok(tooltipFor(cellFor("net"), r).indexOf("Interface wlan0") >= 0, "a net tooltip names its interface");
+  var diskTip = tooltipFor(cellFor("disk"), r);
+  ok(diskTip.indexOf("Mount /") >= 0 && diskTip.indexOf("every physical disk") >= 0, "a disk tooltip names its mount and what I/O counts");
+  ok(diskTip.indexOf("Disk read: 40 KB/s") >= 0 && diskTip.indexOf("Disk write: 12 KB/s") >= 0, "read and write apart");
+  eq(tooltipFor(placeholderCell(), r), "No metrics visible", "the placeholder explains itself");
 })();
 
 // ---------- prefs (v2) ----------
 (function testPrefs() {
+  deepEq(Object.keys(DEFAULTS), ["version", "order", "groups", "unit", "colorIntensity", "gaps", "refresh"], "DEFAULTS top level");
   eq(DEFAULTS.version, 2, "DEFAULTS version 2");
-  eq(DEFAULTS.defaultMode, "digits", "DEFAULTS defaultMode digits");
-  eq(DEFAULTS.showDigits, true, "DEFAULTS showDigits true");
-  eq(DEFAULTS.colorIntensity, 100, "DEFAULTS colorIntensity full");
-  // Icon-vs-word and temp-color are per-group now, not a global flag —
-  // every device but mem defaults to an icon; mem defaults to a word
-  // (there's no icon that reads as clearly "RAM" the way a chip does
-  // "CPU"), and cpu/gpu default to letting their temp warm normally.
-  eq(DEFAULTS.groups.cpu.wordLabel, false, "DEFAULTS cpu group starts as an icon");
-  eq(DEFAULTS.groups.gpu.wordLabel, false, "DEFAULTS gpu group starts as an icon");
-  eq(DEFAULTS.groups.mem.wordLabel, true, "DEFAULTS mem group starts as a word");
-  eq(DEFAULTS.groups.net.wordLabel, false, "DEFAULTS net group starts as an icon");
-  eq(DEFAULTS.groups.disk.wordLabel, false, "DEFAULTS disk group starts as an icon");
-  eq(DEFAULTS.groups.fan.wordLabel, false, "DEFAULTS fan group starts as an icon");
-  eq(DEFAULTS.groups.cpu.tempColor, "primary", "DEFAULTS cpu temp warms normally");
-  eq(DEFAULTS.groups.gpu.tempColor, "primary", "DEFAULTS gpu temp warms normally");
-  eq(DEFAULTS.warnUsage, 70, "DEFAULTS warnUsage");
-  eq(DEFAULTS.critUsage, 90, "DEFAULTS critUsage");
-  eq(DEFAULTS.warnTemp, 75, "DEFAULTS warnTemp");
-  eq(DEFAULTS.critTemp, 90, "DEFAULTS critTemp");
-  deepEq(DEFAULTS.order, ["cpu", "gpu", "mem", "net", "disk", "fan"], "DEFAULTS order is the six groups");
-  eq(DEFAULTS.groups.cpu.enabled, true, "DEFAULTS cpu group enabled");
-  eq(DEFAULTS.groups.gpu.enabled, true, "DEFAULTS gpu group enabled");
-  eq(DEFAULTS.groups.mem.enabled, true, "DEFAULTS mem group enabled");
-  eq(DEFAULTS.groups.fan.enabled, true, "DEFAULTS fan group enabled");
-  eq(DEFAULTS.groups.net.enabled, false, "DEFAULTS net group starts disabled (opt-in)");
-  eq(DEFAULTS.groups.disk.enabled, false, "DEFAULTS disk group starts disabled (opt-in)");
-  eq(DEFAULTS.groups.gpu.adapter, "auto", "DEFAULTS gpu adapter auto");
+  deepEq(Object.keys(DEFAULTS.groups.cpu),
+    ["enabled", "label", "load", "zero", "clock", "temp", "avg", "warnUsage", "critUsage", "warnTemp", "critTemp"], "CPU fields in bar order");
+  deepEq(Object.keys(DEFAULTS.groups.gpu),
+    ["enabled", "adapter", "label", "load", "zero", "clock", "temp", "vram", "power", "warnUsage", "critUsage", "warnTemp", "critTemp"], "GPU fields");
+  deepEq(Object.keys(DEFAULTS.groups.mem), ["enabled", "label", "used", "zero", "swap", "warnUsage", "critUsage"], "memory fields");
+  deepEq(Object.keys(DEFAULTS.groups.net), ["enabled", "iface", "label", "down", "up"], "net fields");
+  deepEq(Object.keys(DEFAULTS.groups.disk), ["enabled", "mount", "label", "used", "zero", "read", "write", "warnUsage", "critUsage"], "disk fields");
+  deepEq(Object.keys(DEFAULTS.groups.fan),
+    ["enabled", "label", "rpm", "showStopped", "warnRpm", "critRpm", "hidden", "order", "names"], "fan fields");
+  deepEq(DEFAULTS.groups.cpu.label, { icon: true, word: false, quiet: false }, "CPU starts as an icon");
+  deepEq(DEFAULTS.groups.cpu.load, { bar: false, number: true, quiet: false }, "CPU load starts as a number");
+  deepEq(DEFAULTS.groups.cpu.zero, { show: true, quiet: true }, "the leading zero starts shown and quiet");
+  deepEq(DEFAULTS.groups.cpu.temp, { icon: false, value: true, unit: false, quiet: false }, "the temp starts bare");
+  deepEq(DEFAULTS.groups.mem.label, { icon: false, word: true, quiet: false }, "RAM starts as a word");
+  deepEq(DEFAULTS.groups.disk.read, { tag: true, value: true, quiet: false }, "disk read starts tagged");
+  eq(DEFAULTS.groups.net.iface + " " + DEFAULTS.groups.disk.mount + " " + DEFAULTS.groups.gpu.adapter, "auto / auto", "sources start automatic");
+  eq(DEFAULTS.groups.net.enabled + "/" + DEFAULTS.groups.disk.enabled, "false/false", "Net and Disk start off");
+  deepEq(DEFAULTS.gaps, { icon: 2, part: 5, metric: 10 }, "default gaps");
+  eq(DEFAULTS.refresh, 3, "default refresh");
 
-  var corrupt = adoptPrefs("{{{ not json");
-  deepEq(corrupt, DEFAULTS, "adoptPrefs corrupt string returns defaults");
+  deepEq(adoptPrefs("{{{ not json"), DEFAULTS, "adoptPrefs corrupt string returns defaults");
   deepEq(adoptPrefs(null), DEFAULTS, "adoptPrefs null returns defaults");
-  deepEq(adoptPrefs(42), DEFAULTS, "adoptPrefs number returns defaults");
-  deepEq(adoptPrefs({}), DEFAULTS, "adoptPrefs empty object returns defaults (upgraded from v1 shape)");
+  deepEq(adoptPrefs({}), DEFAULTS, "adoptPrefs empty object returns defaults");
 
-  var unit = adoptPrefs({ unit: "F" });
-  eq(unit.unit, "F", "adoptPrefs keeps F unit");
-  eq(adoptPrefs({ unit: "X" }).unit, "C", "adoptPrefs clamps bad unit to C");
+  // Validation: every toggle on its own, every field clamped or dropped.
+  var v = adoptPrefs({ groups: { cpu: { load: { bar: true, number: "yes", extra: true }, temp: 3 } } }).groups.cpu;
+  deepEq(v.load, { bar: true, number: true, quiet: false }, "a bad toggle falls back on its own; unknown toggles drop");
+  deepEq(v.temp, DEFAULTS.groups.cpu.temp, "a part that is not an object falls back whole");
+  ok(!("mode" in adoptPrefs({ groups: { cpu: { mode: "gauges", load: {} } } }).groups.cpu), "unknown group fields drop");
+  eq(adoptPrefs({ groups: { gpu: { adapter: "intel" } } }).groups.gpu.adapter, "intel", "a known GPU source is kept");
+  eq(adoptPrefs({ groups: { gpu: { adapter: "matrox" } } }).groups.gpu.adapter, "auto", "an unknown GPU source falls back to auto");
+  eq(adoptPrefs({ groups: { net: { iface: "wlan0" } } }).groups.net.iface, "wlan0", "an interface name is kept");
+  eq(adoptPrefs({ groups: { net: { iface: "we ird/" } } }).groups.net.iface, "auto", "a bad interface name falls back to auto");
+  eq(adoptPrefs({ groups: { disk: { mount: "/home" } } }).groups.disk.mount, "/home", "a mount point is kept");
+  eq(adoptPrefs({ groups: { disk: { mount: "home" } } }).groups.disk.mount, "/", "a relative mount falls back to /");
+  deepEq(adoptPrefs({ groups: { fan: { names: { "fan:a/fan1": "  CPU fan ", "fan:a/fan2": "", "cpu": "x", "fan:a/fan3": "x".repeat(30) } } } }).groups.fan.names,
+    { "fan:a/fan1": "CPU fan" }, "fan names are trimmed, and empty, long or non-fan names drop");
+  var limits = adoptPrefs({ groups: { cpu: { warnUsage: -5, critUsage: 500, warnTemp: 100, critTemp: 80 }, fan: { warnRpm: 99999, critRpm: 99999 } } }).groups;
+  eq(limits.cpu.warnUsage + "/" + limits.cpu.critUsage, "0/100", "usage thresholds clamp");
+  ok(limits.cpu.warnTemp < limits.cpu.critTemp, "warn stays under crit");
+  eq(limits.fan.warnRpm + "/" + limits.fan.critRpm, "19999/20000", "RPM thresholds clamp and keep warn under crit");
+  deepEq(adoptPrefs({ groups: {}, gaps: { icon: -1, part: 99, metric: "12" } }).gaps, { icon: 0, part: 20, metric: 12 }, "gaps clamp");
+  eq(adoptPrefs({ groups: {}, refresh: 0 }).refresh, 1, "refresh clamps low");
+  eq(adoptPrefs({ groups: {}, refresh: 60 }).refresh, 10, "refresh clamps high");
+  eq(adoptPrefs({ groups: {}, colorIntensity: 500 }).colorIntensity, 100, "colorIntensity clamps");
+  deepEq(adoptPrefs({ groups: {}, order: ["fan", "fan", "cpu", "bogus"] }).order, ["fan", "cpu", "gpu", "mem", "net", "disk"],
+    "order dedupes and appends missing groups");
 
-  eq(adoptPrefs({ groups: {}, defaultMode: "gauges" }).defaultMode, "gauges", "adoptPrefs keeps valid defaultMode");
-  eq(adoptPrefs({ defaultMode: "bogus" }).defaultMode, "digits", "adoptPrefs normalizes bad defaultMode");
-  eq(adoptPrefs({ groups: {}, defaultMode: "combo" }).defaultMode, "digits", "adoptPrefs rejects the retired combo mode too");
-
-  eq(adoptPrefs({ groups: {}, colorIntensity: 40 }).colorIntensity, 40, "adoptPrefs keeps a valid colorIntensity");
-  eq(adoptPrefs({ groups: {}, colorIntensity: -10 }).colorIntensity, 0, "adoptPrefs clamps colorIntensity low");
-  eq(adoptPrefs({ groups: {}, colorIntensity: 500 }).colorIntensity, 100, "adoptPrefs clamps colorIntensity high");
-  eq(adoptPrefs({ colorMode: "graphite" }).colorIntensity, 0, "a lone legacy colorMode:graphite still zeroes intensity");
-
-  eq(adoptPrefs({ groups: { cpu: { wordLabel: true } } }).groups.cpu.wordLabel, true, "adoptPrefs keeps a group's wordLabel true");
-  eq(adoptPrefs({ groups: { cpu: { wordLabel: "yes" } } }).groups.cpu.wordLabel, false, "adoptPrefs booleans strict: wordLabel falls back to that group's default");
-  eq(adoptPrefs({ groups: { cpu: { tempColor: "secondary" } } }).groups.cpu.tempColor, "secondary", "adoptPrefs keeps a valid tempColor");
-  eq(adoptPrefs({ groups: { cpu: { tempColor: "bogus" } } }).groups.cpu.tempColor, "primary", "adoptPrefs clamps a bad tempColor to primary");
-
-  var clamped = adoptPrefs({ warnUsage: -5, critUsage: 500, warnTemp: -10, critTemp: 999 });
-  eq(clamped.warnUsage, 0, "adoptPrefs clamps usage warn low");
-  eq(clamped.critUsage, 100, "adoptPrefs clamps usage crit high");
-  eq(clamped.warnTemp, 0, "adoptPrefs clamps temp warn low");
-  eq(clamped.critTemp, 150, "adoptPrefs clamps temp crit high");
-
-  var narrowed = adoptPrefs({ warnUsage: 90, critUsage: 90 });
-  ok(narrowed.warnUsage < narrowed.critUsage, "adoptPrefs enforces warn less than crit usage");
-  var narrowedT = adoptPrefs({ warnTemp: 100, critTemp: 80 });
-  ok(narrowedT.warnTemp < narrowedT.critTemp, "adoptPrefs enforces warn less than crit temp");
-
-  // Per-group validation: booleans strict-typed, unknown groups ignored,
-  // missing groups filled with defaults.
-  var groupStrict = adoptPrefs({ groups: { cpu: { showUsage: 1, showTemp: "yes" }, fan: { showRpm: "true" } } });
-  eq(groupStrict.groups.cpu.showUsage, true, "group booleans strict: non-boolean falls back to default (true)");
-  eq(groupStrict.groups.cpu.showTemp, true, "group booleans strict: non-boolean falls back to default (true)");
-  eq(groupStrict.groups.fan.showRpm, false, "group booleans strict: non-boolean falls back to default (false)");
-
-  var modeStrict = adoptPrefs({ groups: { gpu: { mode: "bogus" } } });
-  eq(modeStrict.groups.gpu.mode, "inherit", "group mode normalizes to inherit when invalid");
-  eq(adoptPrefs({ groups: { gpu: { mode: "gauges" } } }).groups.gpu.mode, "gauges", "group mode keeps a valid explicit mode");
-
-  eq(adoptPrefs({ groups: { mem: { ramFormat: "used" } } }).groups.mem.ramFormat, "used", "mem group keeps GiB format");
-  eq(adoptPrefs({ groups: { mem: { ramFormat: "x" } } }).groups.mem.ramFormat, "percent", "mem group clamps bad ramFormat");
-
-  var missingGroup = adoptPrefs({ groups: { cpu: { enabled: false } } });
-  eq(missingGroup.groups.cpu.enabled, false, "explicit group field kept");
-  eq(missingGroup.groups.net.enabled, false, "missing group filled with its own defaults, not crashed on");
-  ok(missingGroup.groups.disk && typeof missingGroup.groups.disk.showUsage === "boolean", "disk group always present and typed");
-
-  var orderFixed = adoptPrefs({ groups: {}, order: ["fan", "fan", "cpu", "bogus"] });
-  deepEq(orderFixed.order, ["fan", "cpu", "gpu", "mem", "net", "disk"], "order dedupes and appends missing groups");
-
-  var seeded = seedPrefs({ unit: "F", mode: "gauges" });
+  // shell.json seeds are v1-shaped; a v1 gauge carried its digits.
+  var seeded = seedPrefs({ unit: "F", mode: "gauges", iconGap: 3 });
   eq(seeded.unit, "F", "seedPrefs picks unit from a v1-shaped shell object");
-  eq(seeded.defaultMode, "gauges", "seedPrefs upgrades a v1-shaped shell object's mode to defaultMode");
+  deepEq(seeded.groups.cpu.load, { bar: true, number: true, quiet: false }, "a v1 gauges seed becomes bar and number");
+  eq(seeded.gaps.icon, 3, "a shell.json gap seeds the prefs");
+  deepEq(seedPrefs({ mode: "gauges", showDigits: false }).groups.cpu.load, { bar: true, number: false, quiet: false }, "gauges without digits is a bar");
   deepEq(seedPrefs(null), DEFAULTS, "seedPrefs null returns defaults");
 
-  // v1 -> v2 upgrade, exercised through adoptPrefs (the single load path).
+  // v1 -> v2, through adoptPrefs (the single load path).
   var v1 = {
     version: 1,
     hidden: ["cpu_temp", "gpu_usage", "mem_usage", "fan:thinkpad/fan1"],
@@ -753,64 +707,80 @@ function byKey(list, key) {
     warnUsage: 60, critUsage: 80, warnTemp: 70, critTemp: 85
   };
   var up = adoptPrefs(v1);
-  eq(up.version, 2, "v1 upgrade sets version 2");
-  eq(up.defaultMode, "gauges", "v1 mode becomes defaultMode");
-  eq(up.unit, "F", "v1 upgrade keeps unit");
-  eq(up.colorIntensity, 0, "v1 upgrade maps graphite to zero colorIntensity");
-  eq(up.groups.cpu.showTemp, false, "v1 hidden cpu_temp narrows to showTemp false");
-  eq(up.groups.cpu.showUsage, true, "v1 upgrade leaves cpu_usage visible");
-  eq(up.groups.gpu.showUsage, false, "v1 hidden gpu_usage narrows to showUsage false");
-  eq(up.groups.mem.enabled, false, "v1 hidden mem_usage disables the whole mem group");
-  eq(up.groups.mem.ramFormat, "used", "v1 ramFormat migrates to groups.mem.ramFormat");
-  eq(up.groups.fan.showRpm, true, "v1 showRpm migrates to groups.fan.showRpm");
-  deepEq(up.groups.fan.hidden, ["fan:thinkpad/fan1"], "v1 fan hidden keys move to groups.fan.hidden verbatim");
-  eq(up.groups.cpu.showClocks, true, "v1 global showClocks migrates to groups.cpu.showClocks");
-  eq(up.groups.gpu.showClocks, true, "v1 global showClocks migrates to groups.gpu.showClocks too");
-  deepEq(up.order, ["mem", "cpu", "gpu", "net", "disk", "fan"], "v1 order expands to groups, mem first as in the source order");
-  eq(up.groups.cpu.wordLabel, true, "v1 global wordLabels:true migrates to groups.cpu.wordLabel");
-  eq(up.groups.gpu.wordLabel, true, "v1 global wordLabels:true migrates to groups.gpu.wordLabel");
-  eq(up.groups.mem.wordLabel, true, "v1 global wordLabels:true migrates to groups.mem.wordLabel");
-  eq(up.groups.net.wordLabel, true, "v1 global wordLabels:true migrates to groups.net.wordLabel");
-  eq(up.groups.disk.wordLabel, true, "v1 global wordLabels:true migrates to groups.disk.wordLabel");
-  eq(up.groups.fan.wordLabel, true, "v1 global wordLabels:true migrates to groups.fan.wordLabel");
+  deepEq(up.groups.cpu.load, { bar: true, number: false, quiet: false }, "v1 gauges without digits becomes a bar");
+  eq(up.groups.cpu.temp.value, false, "v1 hidden cpu_temp switches the temp off");
+  deepEq(up.groups.gpu.load, { bar: false, number: false, quiet: false }, "v1 hidden gpu_usage switches the GPU load off");
+  eq(up.groups.mem.enabled, false, "v1 hidden mem_usage disables memory");
+  deepEq(up.groups.mem.used, { bar: true, percent: false, gib: false, quiet: false }, "v1 memory as a bar");
+  eq(up.groups.cpu.clock.show && up.groups.gpu.clock.show, true, "v1 showClocks turns both clocks on");
+  eq(up.groups.fan.rpm.unit, true, "v1 showRpm becomes the RPM unit");
+  deepEq(up.groups.fan.hidden, ["fan:thinkpad/fan1"], "v1 fan hidden keys carry over");
+  ok(["cpu", "gpu", "mem", "net", "disk", "fan"].every(function (id) { return up.groups[id].label.word && !up.groups[id].label.icon; }),
+    "v1 wordLabels becomes a word label everywhere");
+  eq(up.groups.cpu.warnUsage + "/" + up.groups.gpu.critTemp + "/" + up.groups.mem.warnUsage, "60/85/60", "v1 thresholds seed every group");
+  eq(up.unit + "/" + up.colorIntensity, "F/0", "v1 unit and graphite");
+  deepEq(up.order, ["mem", "cpu", "gpu", "net", "disk", "fan"], "v1 order expands to groups");
+  deepEq(adoptPrefs({ version: 1, mode: "digits", ramFormat: "used" }).groups.mem.used, { bar: false, percent: false, gib: true, quiet: false },
+    "v1 memory in GiB");
+  deepEq(adoptPrefs({ barStyle: "bar+temp" }).groups.cpu.load, { bar: true, number: false, quiet: false }, "barStyle bar+temp");
+  deepEq(adoptPrefs({ barStyle: "labels" }).groups.cpu.label, { icon: false, word: true, quiet: false }, "barStyle labels");
+  var legacyKeys = adoptPrefs({ hidden: ["cpu", "temp"] });
+  ok(!legacyKeys.groups.cpu.load.number && !legacyKeys.groups.cpu.temp.value, "legacy cpu/temp keys hide those pieces");
 
-  var upNoWords = adoptPrefs({ version: 1, wordLabels: false });
-  eq(upNoWords.groups.cpu.wordLabel, false, "v1 wordLabels:false leaves groups.cpu.wordLabel at its own default");
-  eq(upNoWords.groups.mem.wordLabel, true, "v1 wordLabels:false leaves groups.mem.wordLabel at its own default (true)");
+  // The mode draft: a top-level defaultMode, one boolean per piece.
+  var modes = adoptPrefs({
+    version: 2, defaultMode: "gauges",
+    groups: {
+      cpu: { enabled: true, mode: "digits", showUsage: true, showTemp: true, showClocks: true, wordLabel: false, tempColor: "secondary" },
+      gpu: { enabled: true, mode: "inherit", showUsage: true, showTemp: false, wordLabel: true },
+      mem: { enabled: false, mode: "inherit", ramFormat: "used" },
+      disk: { enabled: false, mode: "digits", showUsage: true, showIo: false },
+      fan: { enabled: false, showRpm: true, hidden: ["fan:a/fan1"] }
+    },
+    unit: "C", colorIntensity: 80, warnUsage: 65, critUsage: 85, warnTemp: 80, critTemp: 95
+  });
+  eq(modes.groups.cpu.load.number && !modes.groups.cpu.load.bar, true, "mode draft digits becomes a number");
+  eq(modes.groups.cpu.clock.show + "/" + modes.groups.cpu.temp.quiet, "true/true", "mode draft clock and quiet temp");
+  eq(modes.groups.gpu.load.bar + "/" + modes.groups.gpu.temp.value + "/" + modes.groups.gpu.label.word, "true/false/true",
+    "mode draft inherit follows the default mode; showTemp and wordLabel carry over");
+  deepEq(modes.groups.mem.used, { bar: true, percent: false, gib: false, quiet: false }, "mode draft memory inherits the bar");
+  eq(modes.groups.disk.read.value + "/" + modes.groups.disk.write.value, "false/false", "mode draft showIo false hides disk activity");
+  eq(modes.groups.fan.rpm.unit + "/" + modes.groups.fan.hidden.join(), "true/fan:a/fan1", "mode draft fans");
+  eq(modes.groups.cpu.critTemp + "/" + modes.groups.disk.warnUsage + "/" + modes.colorIntensity, "95/65/80", "mode draft thresholds and color");
 
-  // Legacy metric-key renames still apply during the v1 upgrade.
-  var legacyKeys = adoptPrefs({ hidden: ["cpu", "temp", "mem"] });
-  eq(legacyKeys.groups.cpu.showUsage, false, "legacy \"cpu\" key migrates and hides cpu usage");
-  eq(legacyKeys.groups.cpu.showTemp, false, "legacy \"temp\" key migrates and hides cpu temp");
-  eq(legacyKeys.groups.mem.enabled, false, "legacy \"mem\" key migrates and disables the mem group");
+  // The word draft: one word per piece (the file this build replaces).
+  var words = adoptPrefs({
+    version: 2, order: ["cpu", "gpu", "mem", "net", "disk", "fan"],
+    groups: {
+      cpu: { enabled: true, label: "icon", load: "bar", zero: "quiet", clock: "on", temp: "plain", tempColor: "secondary", warnTemp: 80, critTemp: 95 },
+      gpu: { enabled: true, adapter: "auto", label: "none", load: "both", zero: "normal", clock: "quiet", temp: "icon", tempColor: "primary" },
+      mem: { enabled: false, label: "icon", load: "number", zero: "hide", ramFormat: "used" },
+      net: { enabled: true, label: "word", down: "plain", up: "off" },
+      disk: { enabled: false, label: "icon", load: "bar", activity: "quiet", warnUsage: 60, critUsage: 95 },
+      fan: { enabled: false, label: "icon", rpmUnit: "on", hidden: ["fan:a/fan1"], order: null }
+    },
+    unit: "C", colorIntensity: 70
+  });
+  var wc = words.groups.cpu;
+  eq([wc.load.bar, wc.load.number, wc.zero.show, wc.zero.quiet, wc.clock.show, wc.clock.quiet, wc.temp.icon, wc.temp.value, wc.temp.quiet].join(),
+    "true,false,true,true,true,false,false,true,true", "word draft CPU: bar, quiet zero, clock on, quiet bare temp");
+  eq(wc.warnTemp + "/" + wc.critTemp, "80/95", "word draft keeps its own thresholds");
+  var wg = words.groups.gpu;
+  eq([wg.label.icon, wg.label.word, wg.load.bar, wg.load.number, wg.zero.quiet, wg.clock.quiet, wg.temp.icon].join(),
+    "false,false,true,true,false,true,true", "word draft GPU: no label, both, plain zero, quiet clock, temp icon");
+  deepEq(words.groups.mem.used, { bar: false, percent: false, gib: true, quiet: false }, "word draft memory in GiB");
+  eq(words.groups.mem.zero.show, false, "word draft hidden zero");
+  eq(words.groups.net.label.word + "/" + words.groups.net.down.icon + "/" + words.groups.net.up.value, "true/false/false", "word draft net");
+  eq(words.groups.disk.read.quiet + "/" + words.groups.disk.write.value + "/" + words.groups.disk.warnUsage, "true/true/60", "word draft disk activity quiet");
+  eq(words.groups.fan.rpm.unit + "/" + words.groups.fan.hidden.join() + "/" + words.colorIntensity, "true/fan:a/fan1/70", "word draft fans and color");
 
-  // Pre-1.0 barStyle shape still maps through the same single entry point.
-  eq(adoptPrefs({ barStyle: "numbers" }).defaultMode, "digits", "migrate numbers to digits");
-  var bars = adoptPrefs({ barStyle: "bars" });
-  eq(bars.defaultMode, "gauges", "migrate bars to gauges");
-  eq(bars.showDigits, false, "migrate bars without digits");
-  var barsDigits = adoptPrefs({ barStyle: "bars+digits" });
-  eq(barsDigits.defaultMode, "gauges", "migrate bars+digits to gauges");
-  eq(barsDigits.showDigits, true, "migrate bars+digits with digits");
-  eq(adoptPrefs({ barStyle: "bar+temp" }).defaultMode, "gauges", "migrate bar+temp to Bar mode (pairing is unconditional now)");
-  var labels = adoptPrefs({ barStyle: "labels" });
-  eq(labels.defaultMode, "digits", "migrate labels to digits");
-  eq(labels.groups.cpu.wordLabel, true, "migrate labels to per-group words (cpu)");
-  eq(labels.groups.mem.wordLabel, true, "migrate labels to per-group words (mem)");
-
-  // serialize()/adoptPrefs() round-trip and the exact v2 key order.
-  var ser = serialize({ groups: {}, unit: "F", defaultMode: "gauges", warnUsage: 60 });
-  var parsedBack = JSON.parse(ser);
-  eq(parsedBack.unit, "F", "serialize round trip unit");
-  eq(parsedBack.defaultMode, "gauges", "serialize round trip defaultMode");
-  var keyOrder = Object.keys(parsedBack);
-  deepEq(keyOrder, ["version", "order", "defaultMode", "groups", "unit", "showDigits", "colorIntensity", "warnUsage", "critUsage", "warnTemp", "critTemp"], "serialize stable key order");
-  deepEq(Object.keys(parsedBack.groups), ["cpu", "gpu", "mem", "net", "disk", "fan"], "serialize stable group order");
-  deepEq(Object.keys(parsedBack.groups.fan), ["enabled", "showRpm", "hidden", "order", "wordLabel"], "serialize stable fan group key order");
-
-  var full = adoptPrefs(v1);
-  var roundTrip = adoptPrefs(serialize(full));
-  deepEq(roundTrip, full, "serialize/adoptPrefs round trip is stable for an upgraded v1 file");
+  // serialize()/adoptPrefs() round trips with the exact key order.
+  var parsedBack = JSON.parse(serialize({ groups: {}, unit: "F" }));
+  deepEq(Object.keys(parsedBack), ["version", "order", "groups", "unit", "colorIntensity", "gaps", "refresh"], "serialize stable key order");
+  deepEq(Object.keys(parsedBack.groups.cpu.load), ["bar", "number", "quiet"], "a part keeps its toggle order");
+  deepEq(adoptPrefs(serialize(up)), up, "round trip of an upgraded v1 file");
+  deepEq(adoptPrefs(serialize(words)), words, "round trip of an upgraded word draft");
+  deepEq(adoptPrefs(serialize(modes)), modes, "round trip of an upgraded mode draft");
 })();
 
 console.log("PASS " + passed + " assertions, FAIL " + failed);
