@@ -1,4 +1,4 @@
-# Modular HW Monitor
+# Hardwarchy
 
 CPU, GPU, memory, network, disk and every fan on the machine — one
 compact read-out each, straight in the [Omarchy](https://omarchy.org/)
@@ -8,7 +8,7 @@ bar, built piece by piece the way you want it.
 own row: add it, remove it, mute it.** Keep the two or three you actually
 watch; the rest stay one click away.
 
-![Modular HW Monitor in the Omarchy bar](preview.png)
+![Hardwarchy in the Omarchy bar](preview.png)
 
 *The bar draws CPU (gauge, load and temp), RAM, disk space and two fans.
 Below it, the menu with the CPU card open: one row per piece, each with
@@ -107,7 +107,7 @@ pieces, between read-outs), the refresh interval and Reset all.
 A vertical bar always draws numbers. The exact figures behind any gauge
 live in the tooltip and the menu.
 
-Everything is remembered in `~/.config/omarchy/modular-hw-monitor.json`
+Everything is remembered in `~/.config/omarchy/hardwarchy.json`
 and survives a reboot, a shell restart and `omarchy refresh shell`:
 
 ```json
@@ -124,7 +124,8 @@ and survives a reboot, a shell restart and `omarchy refresh shell`:
 ```
 
 Groups, pieces and toggles left out of the file take their defaults. A
-prefs file from 1.0 upgrades itself on first load.
+prefs file from 1.0 upgrades itself on first load, and the first start
+adopts a `modular-hw-monitor.json` from before the rename.
 
 A fan is remembered by its hwmon id, never by its position, so loading
 a module or docking the machine cannot hide a different fan than the one
@@ -134,31 +135,37 @@ the way back to the menu, rather than a zero-pixel hole.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/tymurbogach/omarchy-modular-hw-monitor.git --enable
+omarchy plugin add https://github.com/tymurbogach/hardwarchy.git --enable
 ```
 
 The widget mounts in the right bar section. Move it with:
 
 ```bash
-omarchy bar move io.github.tymurbogach.modular-hw-monitor --section center
+omarchy bar move io.github.tymurbogach.hardwarchy --section center
 ```
 
 Update later with:
 
 ```bash
-omarchy plugin update io.github.tymurbogach.modular-hw-monitor
+omarchy plugin update io.github.tymurbogach.hardwarchy
 ```
 
-> Reinstalls from a fresh clone: if you carried a checkout from before
-> the 1.0 rewrite, remove the plugin and add it again rather than
-> updating, so no stale file survives.
+> Hardwarchy was called Modular HW Monitor before 2.1. The old id does
+> not update in place: remove `io.github.tymurbogach.modular-hw-monitor`,
+> then add Hardwarchy. Your settings carry over on the first start.
 
 ## Remove
 
 ```bash
-omarchy plugin disable io.github.tymurbogach.modular-hw-monitor   # take it off the bar
-omarchy plugin remove io.github.tymurbogach.modular-hw-monitor    # delete it
-rm -f ~/.config/omarchy/modular-hw-monitor.json                   # forget the prefs
+omarchy plugin disable io.github.tymurbogach.hardwarchy   # take it off the bar
+omarchy plugin remove io.github.tymurbogach.hardwarchy    # delete it
+rm -f ~/.config/omarchy/hardwarchy.json                   # forget the prefs
+```
+
+A prefs file from before the rename stays where it was. Delete it too:
+
+```bash
+rm -f ~/.config/omarchy/modular-hw-monitor.json ~/.config/omarchy/any-monitor.json
 ```
 
 ## Requirements
@@ -211,7 +218,7 @@ quickshell -p dev.qml
 ```
 
 Photograph states straight from a cold start. Every variable takes the
-prefix `MODULAR_HW_MONITOR_`:
+prefix `HARDWARCHY_`:
 
 | Variable | Effect |
 |---|---|
@@ -223,9 +230,9 @@ prefix `MODULAR_HW_MONITOR_`:
 | `FONT` | Font family to draw with |
 
 ```bash
-MODULAR_HW_MONITOR_PARTS='cpu.load=bar,number;cpu.temp=icon,value,unit' quickshell -p dev.qml
-MODULAR_HW_MONITOR_ENABLE=net,disk MODULAR_HW_MONITOR_PARTS='disk.used=percent,gib' quickshell -p dev.qml
-MODULAR_HW_MONITOR_PARTS='cpu.label=;cpu.temp=value,quiet' MODULAR_HW_MONITOR_FAKE_LOAD=1 quickshell -p dev.qml
+HARDWARCHY_PARTS='cpu.load=bar,number;cpu.temp=icon,value,unit' quickshell -p dev.qml
+HARDWARCHY_ENABLE=net,disk HARDWARCHY_PARTS='disk.used=percent,gib' quickshell -p dev.qml
+HARDWARCHY_PARTS='cpu.label=;cpu.temp=value,quiet' HARDWARCHY_FAKE_LOAD=1 quickshell -p dev.qml
 ```
 
 In the harness, clicking a read-out cycles its load.

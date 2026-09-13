@@ -18,7 +18,7 @@ import "Menu"
 
 Panel {
   id: root
-  moduleName: "io.github.tymurbogach.modular-hw-monitor"
+  moduleName: "io.github.tymurbogach.hardwarchy"
   manageIpc: false
 
   property var anchorItem: null
@@ -458,7 +458,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Modular HW Monitor"
+            text: "Hardwarchy"
             color: root.fg
             font.family: root.ff
             font.pixelSize: Style.font.subtitle

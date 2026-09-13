@@ -1,4 +1,4 @@
-// Metric catalog for the modular HW monitor.
+// Metric catalog for Hardwarchy.
 // Plain script: top-level var and function only, no imports or exports.
 // Standalone: every helper used here is defined in this file under a
 // metrics-prefixed name, so loading order does not matter.

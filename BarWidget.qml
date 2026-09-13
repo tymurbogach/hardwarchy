@@ -10,7 +10,7 @@ import "Styles/Modes.js" as Modes
 
 BarWidget {
   id: root
-  moduleName: "io.github.tymurbogach.modular-hw-monitor"
+  moduleName: "io.github.tymurbogach.hardwarchy"
 
   readonly property bool opened: panelLoader.item
     ? panelLoader.item.opened === true
@@ -104,9 +104,15 @@ BarWidget {
   // shell.json is rewritten wholesale by `omarchy refresh shell` with no
   // post-refresh hook, so prefs live in their own watched file. Two bar
   // instances (two monitors) follow each other through watchChanges.
-  readonly property string prefsPath:
-    Quickshell.env("HOME") + "/.config/omarchy/modular-hw-monitor.json"
-  property string legacyPath: ""
+  readonly property string configDir: Quickshell.env("HOME") + "/.config/omarchy/"
+  readonly property string prefsPath: root.configDir + "hardwarchy.json"
+  // Prefs files from before a rename, newest first. Without a current
+  // file, the first one found is re-saved under the current name.
+  readonly property var legacyNames: ["modular-hw-monitor.json", "any-monitor.json"]
+  property int legacyIndex: -1
+  readonly property string legacyPath:
+    root.legacyIndex >= 0 && root.legacyIndex < root.legacyNames.length
+      ? root.configDir + root.legacyNames[root.legacyIndex] : ""
 
   function commit(next) {
     root.prefs = Prefs.adoptPrefs(next)
@@ -258,24 +264,24 @@ BarWidget {
     atomicWrites: true
     printErrors: false
     onLoaded: root.commit(text())
+    // The legacy search runs once: a prefs file deleted later falls back
+    // to the seed, not to an old file.
     onLoadFailed: {
       root.seedPrefs()
-      root.legacyPath = Quickshell.env("HOME") + "/.config/omarchy/any-monitor.json"
+      if (root.legacyIndex < 0) root.legacyIndex = 0
     }
     onFileChanged: reload()
   }
 
-  // A pre-rename state file still counts, and is re-saved under the
-  // new name on first sight.
+  // Walks legacyNames: the first file found wins, a missing one moves on.
   FileView {
     id: legacyPrefs
     path: root.legacyPath
     watchChanges: false
     atomicWrites: false
     printErrors: false
-    onLoaded: {
-      root.commit(text())
-    }
+    onLoaded: root.commit(text())
+    onLoadFailed: if (root.legacyIndex >= 0) root.legacyIndex++
   }
 
   // ---- clicks ---------------------------------------------------------

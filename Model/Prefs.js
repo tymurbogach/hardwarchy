@@ -1,4 +1,4 @@
-// Preferences for the modular HW monitor.
+// Preferences for Hardwarchy.
 // Plain script: top-level var and function only, no imports or exports.
 // v2 schema: monitors are grouped (cpu/gpu/mem/net/disk/fan). Every piece
 // of a group's bar cell is a "part": boolean toggles that add or remove

@@ -1,4 +1,4 @@
-// Tooltips for the modular HW monitor.
+// Tooltips for Hardwarchy.
 // Plain script: top-level var and function only, no imports or exports.
 // Standalone: formatting helpers are duplicated here under
 // tooltip-prefixed names so load order does not matter.

@@ -3,10 +3,10 @@
 // photographed here is what ships.
 //
 //   quickshell -p dev.qml
-//   MODULAR_HW_MONITOR_ENABLE=net,disk \
-//     MODULAR_HW_MONITOR_PARTS='cpu.load=bar,number;cpu.temp=icon,value,quiet' \
-//     MODULAR_HW_MONITOR_COLOR=0 MODULAR_HW_MONITOR_FAKE_GPU=1 \
-//     MODULAR_HW_MONITOR_FAKE_LOAD=1 quickshell -p dev.qml
+//   HARDWARCHY_ENABLE=net,disk \
+//     HARDWARCHY_PARTS='cpu.load=bar,number;cpu.temp=icon,value,quiet' \
+//     HARDWARCHY_COLOR=0 HARDWARCHY_FAKE_GPU=1 \
+//     HARDWARCHY_FAKE_LOAD=1 quickshell -p dev.qml
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
@@ -21,7 +21,7 @@ ShellRoot {
   property var reading: Metrics.EMPTY
 
   function env(name) {
-    return Quickshell.env("MODULAR_HW_MONITOR_" + name) || ""
+    return Quickshell.env("HARDWARCHY_" + name) || ""
   }
 
   // PARTS lists "group.part=toggle,toggle" entries split by ";": every
@@ -126,7 +126,7 @@ ShellRoot {
 
   FloatingWindow {
     id: window
-    title: "modular-hw-monitor preview"
+    title: "hardwarchy preview"
     implicitWidth: 1100
     implicitHeight: 640
     color: "#1a1b26"

@@ -1,4 +1,4 @@
-# SPEC — Modular HW Monitor (clean-room behavior specification)
+# SPEC: Hardwarchy (clean-room behavior specification)
 
 This document describes observable behavior only. Implementations must be
 written from this spec without copying files from the previous codebase.
@@ -12,7 +12,7 @@ per hardware group, each its own click target, built piece by piece from
 that group's settings. A popout menu lists every group with a live
 preview, a switch and one row per piece, plus a few general settings.
 
-- Plugin id: `io.github.tymurbogach.modular-hw-monitor`
+- Plugin id: `io.github.tymurbogach.hardwarchy`
 - Entry point: `BarWidget.qml`, kind `bar-widget`, default section `right`.
 - Language: English everywhere (code, UI, docs, commits).
 - Dependencies at runtime: `bash` only. No lm_sensors, no vendor tools.
@@ -228,7 +228,7 @@ the screen scrolls, and follows the cursor.
 
 ## 7. Preferences
 
-File `~/.config/omarchy/modular-hw-monitor.json`, versioned:
+File `~/.config/omarchy/hardwarchy.json`, versioned:
 
 ```
 {"version": 2, "order": ["cpu", "gpu", "mem", "net", "disk", "fan"],
@@ -268,7 +268,7 @@ File `~/.config/omarchy/modular-hw-monitor.json`, versioned:
 - Older files upgrade on load. Each is first read as one word per piece,
   then each word maps to a part:
   - v1 (no `groups`): legacy keys `cpu`→`cpu_usage`, `temp`→`cpu_temp`,
-    `mem`→`mem_usage`; legacy file `any-monitor.json`; the v1 mode sets
+    `mem`→`mem_usage`; the v1 mode sets
     every load (`gauges` → bar + number, or bar alone when `showDigits`
     was false; `combo` → bar; `digits` → number); hidden usage/temp →
     off; hidden `mem_usage` disables memory; `showClocks` → clock;
@@ -280,11 +280,15 @@ File `~/.config/omarchy/modular-hw-monitor.json`, versioned:
   - The word draft (`"load": "bar"`, `"temp": "plain"`, …): each word
     maps to its part; `tempColor: "secondary"` → a quiet temp.
 - Corrupt file ⇒ defaults, never a blank bar.
+- Without `hardwarchy.json`, the widget adopts the newest file from
+  before a rename, `modular-hw-monitor.json` (2.0) and then
+  `any-monitor.json` (pre-1.0), and saves it under the current name. It
+  looks once per start and leaves the old file on disk.
 
 ## 8. Harness & tests
 
 - `dev.qml`: same `MetricButton` as the bar, plain window, no Omarchy
-  imports in shared components. Env (prefix `MODULAR_HW_MONITOR_`):
+  imports in shared components. Env (prefix `HARDWARCHY_`):
   `HIDDEN`, `ENABLE`, `PARTS`, `COLOR`, `FAKE_GPU`, `FAKE_LOAD`, `FONT`.
   Shows strip + menu stand-ins.
 - `tests/model-tests.js` (node): pure-logic tests for parse, metrics,
@@ -298,6 +302,8 @@ File `~/.config/omarchy/modular-hw-monitor.json`, versioned:
 
 ## 9. Docs
 
-README (use, cell options, menu, prefs, install/remove, dev env vars),
-CHANGELOG from 1.0.0, MIT LICENSE (single holder: Tymur Bogach —
-clean-room tree).
+README (use, cell options, menu, prefs, install/remove, dev env vars,
+a gallery from `docs/images/`), CHANGELOG from 1.0.0, MIT LICENSE
+(single holder: Tymur Bogach, clean-room tree), and contributor notes
+in `docs/CONTRIBUTING.md`. The tree carries no agent instruction files
+(`CLAUDE.md`, `AGENTS.md`): the marketplace review rejects them.

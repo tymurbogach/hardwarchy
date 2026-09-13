@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.0
+
+- The plugin is now Hardwarchy: id `io.github.tymurbogach.hardwarchy`,
+  repository `github.com/tymurbogach/hardwarchy`. The old id does not
+  update in place: remove it, then add the new one.
+- Prefs move to `~/.config/omarchy/hardwarchy.json`. The first start
+  adopts `modular-hw-monitor.json`, so no setting is lost.
+- The harness variables take the prefix `HARDWARCHY_`.
+- The README shows a gallery of bar variants and menu cards.
+- Contributor notes move from `CLAUDE.md` to `docs/CONTRIBUTING.md`. The
+  plugin tree carries no agent instruction files.
+
 ## 2.0.0
 
 - Monitors come in six groups (CPU, GPU, Memory, Network, Disk, Fans),

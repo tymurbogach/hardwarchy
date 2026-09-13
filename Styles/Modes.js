@@ -1,4 +1,4 @@
-// Bar cells for the modular HW monitor.
+// Bar cells for Hardwarchy.
 // Plain script: top-level var and function only, no imports or exports.
 // Standalone: does not call into Metrics.js. Metrics arrive already
 // built and filtered, prefs already adopted; this file decides how each
