@@ -163,13 +163,15 @@ function tooltipNetDetails(first) {
   return iface !== null ? ["Interface " + iface] : [];
 }
 
-function tooltipDiskDetails(first) {
+function tooltipDiskDetails(first, shown) {
   var lines = [];
   var mount = tooltipStr(first.mount);
   if (mount !== null) {
     lines.push("Mount " + mount);
   }
-  lines.push("Read and write count every physical disk");
+  if (shown.read || shown.write) {
+    lines.push("Read and write count every physical disk");
+  }
   return lines;
 }
 
@@ -204,7 +206,7 @@ function tooltipCell(metrics, device, reading) {
   } else if (device === "net") {
     extra = tooltipNetDetails(list[0]);
   } else if (device === "disk") {
-    extra = tooltipDiskDetails(list[0]);
+    extra = tooltipDiskDetails(list[0], shown);
   }
   for (i = 0; i < extra.length; i++) {
     if (extra[i] && lines.indexOf(extra[i]) < 0) {

@@ -23,7 +23,8 @@ GPU_WANTED="${MONITOR_GPU:-auto}"
 NET_IFACE_WANTED="${MONITOR_NET_IFACE:-auto}"
 # What to read, as a comma list of: cpu, temp, clocks, load, mem, gpu, net,
 # disk, io, fans, mounts. "all" (the default) reads everything, "none"
-# nothing but the CPU model and the GPU sources found at startup.
+# nothing. A GPU source is probed only while "gpu" is read: nvidia-smi
+# wakes a sleeping NVIDIA card.
 READ_LIST=",${MONITOR_READ:-all},"
 RESCAN_EVERY=30
 
@@ -48,6 +49,7 @@ DISK_PREV_WRITE=""
 DISK_PREV_TIME_US=""
 READINGS=0
 NOW_US=0
+TICK=""           # fd of the pipe `pause` waits on
 
 # Sensor files, found by scan_sensors / scan_intel_engines.
 TEMP_PACKAGE=()   # temp*_input of the CPU package (Tctl/Tdie, Package id)
@@ -163,7 +165,7 @@ is_uint() {
 # is_number <string>: succeeds for JSON-style decimal numbers.
 is_number() {
   case "${1:-}" in
-    ''|*[!0-9.+-eE]*) return 1 ;;
+    ''|*[!0-9.eE+-]*) return 1 ;;
   esac
   [[ "${1:-}" =~ ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]]
 }
@@ -922,7 +924,7 @@ assemble_gpu_detail() {
 # ---------------------------------------------------------------------------
 emit_reading() {
   READINGS=$((READINGS + 1))
-  if [[ $((READINGS % RESCAN_EVERY)) -eq 0 ]]; then
+  if [[ $((READINGS % RESCAN_EVERY)) -eq 0 ]] && needs_sensors; then
     scan_sensors
     if [[ "$GPU_SOURCE" == "intel" ]]; then
       scan_intel_engines
@@ -952,6 +954,27 @@ emit_reading() {
     "$LOAD_JSON" "$GPU_DETAIL_JSON" "$NET_JSON" "$DISK_JSON"
 }
 
+# needs_sensors: succeeds when a wanted provider reads the hwmon or
+# cpufreq files that scan_sensors finds.
+needs_sensors() {
+  wants temp || wants fans || wants gpu || wants clocks
+}
+
+# prime_deltas: the first sample of every rate, so the first line
+# already reports a real delta instead of a priming null.
+prime_deltas() {
+  if wants cpu; then provider_cpu_usage; fi
+  if wants gpu && [[ "$GPU_SOURCE" == "intel" ]]; then provider_gpu_intel; fi
+  if wants net; then provider_net; fi
+  if wants io; then provider_disk_io; fi
+}
+
+# pause <seconds>: wait on a pipe nobody writes to, so a pause forks no
+# `sleep`.
+pause() {
+  read -r -t "$1" -u "$TICK" _ || true
+}
+
 usage() {
   echo "usage: sysread [--loop --interval N]" >&2
 }
@@ -977,27 +1000,27 @@ main() {
     return 1
   fi
 
-  scan_sensors
-  scan_intel_engines
-  pick_gpu_source
-  provider_cpu_info_once
+  exec {TICK}<> <(:)
+  if needs_sensors; then
+    scan_sensors
+  fi
+  if wants gpu; then
+    scan_intel_engines
+    pick_gpu_source
+  fi
+  # The CPU model and core count ride with the CPU group's load average.
+  if wants load; then
+    provider_cpu_info_once
+  fi
 
-  if [[ "$mode" == "once" ]]; then
-    # Prime percentage/rate functions, wait ~0.2 s, then report real deltas.
-    if wants cpu; then provider_cpu_usage; fi
-    if wants gpu && [[ "$GPU_SOURCE" == "intel" ]]; then provider_gpu_intel; fi
-    if wants net; then provider_net; fi
-    if wants io; then provider_disk_io; fi
-    sleep 0.2
-    emit_reading
-  else
-    # A pipe nobody writes to: `read -t` on it waits out the interval
-    # without forking a `sleep` for every reading.
-    local tick
-    exec {tick}<> <(:)
+  # Every line, the first included, reports deltas over at least 0.2 s.
+  prime_deltas
+  pause 0.2
+  emit_reading
+  if [[ "$mode" == "loop" ]]; then
     while true; do
+      pause "$interval"
       emit_reading
-      read -r -t "$interval" -u "$tick" _ || true
     done
   fi
 }

@@ -10,9 +10,10 @@ watch; the rest stay one click away.
 
 ![Modular HW Monitor in the Omarchy bar](preview.png)
 
-*The bar keeps CPU usage, CPU temp and one fan. The menu lists everything
-the machine reports — including what is hidden, still updating, so you
-can decide whether to bring it back.*
+*The bar draws CPU (gauge, load and temp), RAM, disk space and two fans.
+Below it, the menu with the CPU card open: one row per piece, each with
+its Quiet chip, and every group with its live preview, its switch and
+its place in the bar. Net is switched off here, so it is not read.*
 
 ## Why
 
@@ -59,12 +60,13 @@ apart — and you can rename either.
 ## Use
 
 - **Click a metric** — open the menu: one card per group, with a live
-  preview of its read-out and a switch
-- **Click a card, or its chevron** — open that group's rows
+  preview of its read-out, a switch, and ↑ ↓ to move it in the bar
+- **Click a card** — open or close that group's rows; the caret before
+  its icon shows which, and an open card sits on a tinted ground
 - **Right-click a read-out** — cycle its load: number, bar, both (on
   Network and Fans it opens the menu); middle-click opens the menu too
-- **Keyboard** — ↑ ↓ walk every line; on a card → opens it, ← closes it
-  and Enter switches it; on a row ← → walk its buttons and Enter presses
+- **Keyboard** — ↑ ↓ walk every line, ← → walk a line's buttons and
+  Enter presses one; a card's first button (the caret) opens and closes it
 
 ### Build each read-out your way
 
@@ -92,8 +94,8 @@ Value, the tag R or W). Fans have **RPM** (Value · Unit), **Stopped**
 pencil to rename; empty resets), value, move up or down.
 
 Every card ends with its own **alerts** — warn and crit, so a GPU that
-runs hot can have a higher crit than the CPU — and **Order** (Up · Down)
-plus **Reset** for that card alone. A reading warms toward the theme's
+runs hot can have a higher crit than the CPU — and a **Reset** button
+for that card alone (`Reset CPU`). A reading warms toward the theme's
 urgent color between warn and crit; the label warms with the hottest
 reading it names. A card that is on but draws nothing says *nothing
 shown*.

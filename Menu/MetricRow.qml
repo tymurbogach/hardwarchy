@@ -105,7 +105,7 @@ CursorSurface {
 
     // An end row keeps its button's space and swallows the click.
     PanelActionButton {
-      iconText: "\uf077"
+      iconText: "\uf062"
       size: Style.space(20)
       hasCursor: root.cursorButton === 2
       fontFamily: root.fontFamily
@@ -116,7 +116,7 @@ CursorSurface {
     }
 
     PanelActionButton {
-      iconText: "\uf078"
+      iconText: "\uf063"
       size: Style.space(20)
       hasCursor: root.cursorButton === 3
       fontFamily: root.fontFamily

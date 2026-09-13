@@ -307,11 +307,6 @@ BarWidget {
   readonly property string collectorKey: [root.pollSeconds, root.prefs.groups.gpu.adapter,
     root.prefs.groups.net.iface, root.prefs.groups.disk.mount, root.readList].join("|")
 
-  // A restarted collector always primes its delta-based fields (cpu%,
-  // and gpu% on the Intel backend) back to null on its very first line —
-  // set whenever the collector restarts, consumed once by the next reading.
-  property bool primingAfterRestart: false
-
   Process {
     id: reader
     command: [root.readerPath, "--loop", "--interval", String(root.pollSeconds)]
@@ -319,27 +314,27 @@ BarWidget {
     running: true
 
     stdout: SplitParser {
+      // A bad line keeps the last good reading rather than flashing blanks.
+      // The collector primes its rates before its first line, so a restart
+      // never reads as a null blip either.
       onRead: data => {
         const parsed = Metrics.parse(data)
-        if (!Metrics.hasReading(parsed)) return
-        // Keep the last good reading rather than flashing blanks, and
-        // paper over the one-line null blip a deliberate restart causes.
-        root.reading = root.primingAfterRestart
-          ? Metrics.mergeReading(root.reading, parsed)
-          : parsed
-        root.primingAfterRestart = false
+        if (Metrics.hasReading(parsed)) root.reading = parsed
       }
     }
   }
 
-  // A new interval, source or read list restarts the collector.
-  onCollectorKeyChanged: {
+  function restartCollector() {
     reader.running = false
     reader.command = [root.readerPath, "--loop", "--interval", String(root.pollSeconds)]
     reader.environment = root.collectorEnv
-    root.primingAfterRestart = true
     reader.running = true
   }
+
+  // A new interval, source or read list restarts the collector once, even
+  // when several of them move together (opening the menu changes both the
+  // interval and the read list).
+  onCollectorKeyChanged: Qt.callLater(root.restartCollector)
 
   Loader {
     id: panelLoader

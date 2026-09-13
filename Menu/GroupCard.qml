@@ -1,12 +1,13 @@
-// One monitor-group card's header: icon, short label, a live preview of
-// the group's bar cell, an on/off switch and an expand button. Renders
-// only the compact row — the caller (Panel.qml) owns the expanded state
-// and places that group's own rows beneath this. Keeping this component
-// header-only avoids QML's "default property" self-nesting trap.
+// One monitor-group card's header: an open/closed caret, icon, short
+// label, a live preview of the group's bar cell, an on/off switch and
+// arrows that move the group in the bar. Renders only the compact row —
+// the caller (Panel.qml) owns the expanded state and places that group's
+// own rows beneath this. Keeping this component header-only avoids QML's
+// "default property" self-nesting trap.
 //
-// The whole row expands and collapses the card. The switch and the
-// expand button take their own clicks, so enabling a group never
-// requires opening its card first.
+// A click anywhere on the row opens or closes the card; the switch and
+// the arrows take their own clicks. Buttons count 0 (caret), 1 (switch),
+// 2 (up) and 3 (down) for the keyboard cursor.
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
@@ -20,6 +21,10 @@ CursorSurface {
   required property string groupGlyph
   required property bool groupEnabled
   required property bool expanded
+  property bool atFirst: false
+  property bool atLast: false
+  // The button the keyboard cursor sits on, or -1.
+  property int cursorButton: -1
 
   // The group's cells exactly as the bar draws them (Modes.groupCells),
   // with the same color and gap tokens as the bar.
@@ -31,20 +36,19 @@ CursorSurface {
   property real partGap: 0
   property string fontFamily: "monospace"
 
-  signal toggled()
+  signal pressed(int index)
   signal hovered()
-  signal expandRequested()
 
   width: parent ? parent.width : 0
   implicitHeight: row.implicitHeight + Style.space(6)
 
-  // Declared first, so it sits under the switch and the expand button.
+  // Declared first, so it sits under the switch and the arrows.
   MouseArea {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
     onEntered: root.hovered()
-    onClicked: root.expandRequested()
+    onClicked: root.pressed(0)
   }
 
   RowLayout {
@@ -52,9 +56,21 @@ CursorSurface {
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.verticalCenter: parent.verticalCenter
-    anchors.leftMargin: Style.space(8)
+    anchors.leftMargin: Style.space(2)
     anchors.rightMargin: Style.space(2)
-    spacing: Style.space(8)
+    spacing: Style.space(6)
+
+    // A caret, not a chevron: the arrows at the far right move the group.
+    PanelActionButton {
+      iconText: root.expanded ? "\uf0d7" : "\uf0da"
+      size: Style.space(18)
+      hasCursor: root.cursorButton === 0
+      fontFamily: root.fontFamily
+      fontSize: Style.font.caption
+      foreground: root.foreground
+      opacity: 0.6
+      onClicked: root.pressed(0)
+    }
 
     // A fixed glyph column: icons differ in width, and the labels after
     // them line up from card to card.
@@ -119,18 +135,35 @@ CursorSurface {
       trackHeight: Style.space(18)
       cursorPad: Style.space(3)
       checked: root.groupEnabled
+      hasCursor: root.cursorButton === 1
       foreground: root.foreground
       accent: root.accent
-      onToggled: root.toggled()
+      onToggled: root.pressed(1)
     }
 
-    // A full-size hit target with a hover fill, pointing right while the
-    // card is closed and down while it is open.
+    // An end card keeps its arrow's place and swallows the click.
     PanelActionButton {
-      iconText: root.expanded ? "" : ""
+      iconText: "\uf062"
+      size: Style.space(20)
+      hasCursor: root.cursorButton === 2
       fontFamily: root.fontFamily
+      fontSize: Style.font.caption
       foreground: root.foreground
-      onClicked: root.expandRequested()
+      opacity: root.atFirst ? 0.25 : 1
+      tooltipText: "Move left in the bar"
+      onClicked: if (!root.atFirst) root.pressed(2)
+    }
+
+    PanelActionButton {
+      iconText: "\uf063"
+      size: Style.space(20)
+      hasCursor: root.cursorButton === 3
+      fontFamily: root.fontFamily
+      fontSize: Style.font.caption
+      foreground: root.foreground
+      opacity: root.atLast ? 0.25 : 1
+      tooltipText: "Move right in the bar"
+      onClicked: if (!root.atLast) root.pressed(3)
     }
   }
 }

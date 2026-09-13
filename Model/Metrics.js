@@ -72,24 +72,6 @@ var EMPTY = {
   gpu_sources: []
 };
 
-// Legacy metric keys from the previous widget.
-var LEGACY_KEYS = {
-  cpu: "cpu_usage",
-  temp: "cpu_temp",
-  mem: "mem_usage"
-};
-
-function migrateKey(k) {
-  if (k === null || k === undefined) {
-    return k;
-  }
-  var s = String(k);
-  if (Object.prototype.hasOwnProperty.call(LEGACY_KEYS, s)) {
-    return LEGACY_KEYS[s];
-  }
-  return s;
-}
-
 function metricsNum(v) {
   if (v === null || v === undefined) {
     return null;
@@ -134,30 +116,16 @@ function metricsStr(v) {
   return null;
 }
 
+// A fresh EMPTY, its lists new, so no caller can change EMPTY itself.
 function metricsCloneEmpty() {
-  return {
-    schema: 2,
-    cpu: null,
-    temp: null,
-    mem: null,
-    gpu: null,
-    gpu_temp: null,
-    fans: [],
-    cpu_mhz: null,
-    gpu_mhz: null,
-    mem_used_kib: null,
-    mem_total_kib: null,
-    swap_used_kib: null,
-    swap_total_kib: null,
-    cpu_model: null,
-    cpu_cores: null,
-    load: null,
-    gpu_detail: null,
-    net: null,
-    disk: null,
-    gpu_source: null,
-    gpu_sources: []
-  };
+  var out = {};
+  var k = "";
+  for (k in EMPTY) {
+    if (Object.prototype.hasOwnProperty.call(EMPTY, k)) {
+      out[k] = metricsIsArray(EMPTY[k]) ? [] : EMPTY[k];
+    }
+  }
+  return out;
 }
 
 // A list of non-empty strings, or [] for anything else.
@@ -415,72 +383,6 @@ function hasReading(r) {
     return true;
   }
   return false;
-}
-
-// Fields the collector can only answer after a delta between two
-// samples (a fresh process always reports these as null on its first
-// line, by design — see scripts/sysread's priming pattern).
-var METRICS_PRIMED_FIELDS = ["cpu", "gpu"];
-
-// One-time grace merge for the single reading right after a deliberate
-// collector restart (BarWidget.qml restarts `sysread` whenever the poll
-// interval changes, e.g. opening/closing the menu): carries forward the
-// previous reading's primed fields when the new one is still null for
-// them, so a restart never visibly regresses a metric that a moment ago
-// had a real value. Applied exactly once per restart — every reading
-// after this one replaces wholesale again, so a sensor that genuinely
-// disappears still reflects that within a poll or two.
-function mergeReading(oldReading, newReading) {
-  if (!newReading || typeof newReading !== "object") {
-    return newReading;
-  }
-  if (!oldReading || typeof oldReading !== "object") {
-    return newReading;
-  }
-  var out = {};
-  var k = "";
-  for (k in newReading) {
-    if (Object.prototype.hasOwnProperty.call(newReading, k)) {
-      out[k] = newReading[k];
-    }
-  }
-  var i = 0;
-  for (i = 0; i < METRICS_PRIMED_FIELDS.length; i++) {
-    var f = METRICS_PRIMED_FIELDS[i];
-    if ((out[f] === null || out[f] === undefined) &&
-        oldReading[f] !== null && oldReading[f] !== undefined) {
-      out[f] = oldReading[f];
-    }
-  }
-  // Rate fields are nested one level down (net.down_bps, disk.read_bps),
-  // primed by the collector exactly like cpu/gpu usage, for the same reason.
-  var nested = [
-    { container: "net", fields: ["down_bps", "up_bps"] },
-    { container: "disk", fields: ["read_bps", "write_bps"] }
-  ];
-  for (i = 0; i < nested.length; i++) {
-    var c = nested[i].container;
-    if (!out[c] || typeof out[c] !== "object" || !oldReading[c] || typeof oldReading[c] !== "object") {
-      continue;
-    }
-    var merged = {};
-    var ck = "";
-    for (ck in out[c]) {
-      if (Object.prototype.hasOwnProperty.call(out[c], ck)) {
-        merged[ck] = out[c][ck];
-      }
-    }
-    var j = 0;
-    for (j = 0; j < nested[i].fields.length; j++) {
-      var nf = nested[i].fields[j];
-      if ((merged[nf] === null || merged[nf] === undefined) &&
-          oldReading[c][nf] !== null && oldReading[c][nf] !== undefined) {
-        merged[nf] = oldReading[c][nf];
-      }
-    }
-    out[c] = merged;
-  }
-  return out;
 }
 
 // Display labels for fans. Duplicate base labels get " (<chip>)".
@@ -769,7 +671,6 @@ function metricsUsedFields(pct, usedGib, totalGib) {
     padLen: pad.padLen,
     gib: gib,
     value: String(Math.round(pct)) + " %" + (gibLong !== null ? " · " + gibLong : ""),
-    percent: pct,
     ratio: pct / 100
   };
 }
@@ -839,15 +740,11 @@ function metrics(reading, prefs) {
       value: String(Math.round(cpuP)) + " %" + (cpuClockLong !== null ? " · " + cpuClockLong : ""),
       severity: metricsRamp(cpuP, limCpuUsage[0], limCpuUsage[1]),
       dim: false,
-      percent: cpuP,
       ratio: cpuP / 100,
       mhz: cpuMhz,
       unit: unit,
       cpuModel: cpuModel,
-      cpuCores: cpuCores,
-      loadOne: loadOne,
-      loadFive: loadFive,
-      loadFifteen: loadFifteen
+      cpuCores: cpuCores
     });
   }
 
@@ -863,14 +760,10 @@ function metrics(reading, prefs) {
       value: metricsTempValue(cpuT, unit),
       severity: metricsRamp(cpuT, limCpuTemp[0], limCpuTemp[1]),
       dim: false,
-      tempC: cpuT,
       mhz: cpuMhz,
       unit: unit,
       cpuModel: cpuModel,
-      cpuCores: cpuCores,
-      loadOne: loadOne,
-      loadFive: loadFive,
-      loadFifteen: loadFifteen
+      cpuCores: cpuCores
     });
   }
 
@@ -915,13 +808,9 @@ function metrics(reading, prefs) {
       value: String(Math.round(gpuP)) + " %" + (gpuClockLong !== null ? " · " + gpuClockLong : ""),
       severity: metricsRamp(gpuP, limGpuUsage[0], limGpuUsage[1]),
       dim: false,
-      percent: gpuP,
       ratio: gpuP / 100,
       mhz: gpuMhz,
-      unit: unit,
-      vramUsedB: vramUsed,
-      vramTotalB: vramTotal,
-      watts: watts
+      unit: unit
     });
   }
 
@@ -937,12 +826,8 @@ function metrics(reading, prefs) {
       value: metricsTempValue(gpuT, unit),
       severity: metricsRamp(gpuT, limGpuTemp[0], limGpuTemp[1]),
       dim: false,
-      tempC: gpuT,
       mhz: gpuMhz,
-      unit: unit,
-      vramUsedB: vramUsed,
-      vramTotalB: vramTotal,
-      watts: watts
+      unit: unit
     });
   }
 
@@ -994,11 +879,7 @@ function metrics(reading, prefs) {
       glyph: GLYPH.mem,
       severity: metricsRamp(memP, limMem[0], limMem[1]),
       dim: false,
-      unit: unit,
-      memUsedKib: memUsedKib,
-      memTotalKib: memTotalKib,
-      swapUsedKib: swapUsedKib,
-      swapTotalKib: swapTotalKib
+      unit: unit
     }, metricsUsedFields(memP, memHasKib ? memUsedKib / 1048576 : null, memHasKib ? memTotalKib / 1048576 : null)));
   }
 
@@ -1129,8 +1010,7 @@ function metrics(reading, prefs) {
         severity: r === 0 ? 0 : metricsRamp(r, limFan[0], limFan[1]),
         dim: r === 0,
         rpm: r,
-        unit: unit,
-        chip: metricsStr(fan.chip)
+        unit: unit
       });
     }
   }
@@ -1162,14 +1042,13 @@ function orderKeys(allMetrics, order) {
   for (i = 0; i < allMetrics.length; i++) {
     var m = allMetrics[i];
     if (m && typeof m.key === "string") {
-      byKey[migrateKey(m.key)] = m;
       byKey[m.key] = m;
     }
   }
   var seen = {};
   var out = [];
   for (i = 0; i < order.length; i++) {
-    var k = migrateKey(order[i]);
+    var k = order[i];
     if (typeof k !== "string") {
       continue;
     }
@@ -1190,17 +1069,7 @@ function orderKeys(allMetrics, order) {
 }
 
 function isHidden(key, hidden) {
-  if (!metricsIsArray((hidden)) || hidden.length === 0) {
-    return false;
-  }
-  var k = migrateKey(key);
-  var i = 0;
-  for (i = 0; i < hidden.length; i++) {
-    if (migrateKey(hidden[i]) === k) {
-      return true;
-    }
-  }
-  return false;
+  return metricsIsArray(hidden) && hidden.indexOf(key) >= 0;
 }
 
 // Filter out hidden metrics. Keeps default order.

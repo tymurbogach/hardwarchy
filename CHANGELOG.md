@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
 
 - Monitors come in six groups (CPU, GPU, Memory, Network, Disk, Fans),
   each with its own card, switch and options in the menu. Network and
@@ -13,7 +13,9 @@
 - The collector reads only what the bar draws (everything while the
   menu is open). It finds its sensors once, rescans every 30 readings
   and reads with shell builtins: about 10 ms of CPU per reading, down
-  from about 450 ms.
+  from about 450 ms. Its first line already carries real rates, and it
+  never probes the GPU (`nvidia-smi` wakes a sleeping card) while the
+  GPU group is off.
 - New readings: CPU load average, GPU VRAM and power, swap, disk space
   in GiB, and disk read and write apart, each with R/W tags.
 - Sources: pick the GPU (NVIDIA, AMD, Intel), the network interface and
@@ -39,9 +41,10 @@
   up with the icon, and it scales with the theme font size.
 - Three ink-to-ink gaps (`iconGap`, the new `partGap`, `metricGap`);
   switching a piece off never leaves a double gap.
-- The menu uses Omarchy's own buttons and switches. The expand control is
-  a full-size button, and the fan move buttons take their own clicks
-  instead of toggling the fan.
+- The menu uses Omarchy's own buttons and switches. A card header holds
+  an open/closed caret, the switch and the arrows that move the group;
+  an open card sits on a tinted ground with a gap below. The fan move
+  buttons take their own clicks instead of toggling the fan.
 - Prefs move to schema v2; a 1.0 file upgrades itself on first load.
 
 ## 1.0.0

@@ -1,10 +1,11 @@
 // The menu: one collapsible card per monitor group (CPU, GPU, RAM, Net,
-// Disk, Fans). A card's header shows a live preview of the group's bar
-// cell, an on/off switch and an expand button. An open card lists the
-// group's source (GPU, link, mount), then one row per piece of the cell
-// in bar order: chips that add or remove what the piece draws, and the
-// piece's own Quiet chip at the far right. Then the group's
-// alerts and its place in the bar. A General section closes the menu.
+// Disk, Fans). A card's header shows an open/closed caret, a live preview
+// of the group's bar cell, an on/off switch and arrows that move the group
+// in the bar. An open card sits on a tinted ground and lists the group's
+// source (GPU, link, mount), then one row per piece of the cell in bar
+// order: chips that add or remove what the piece draws, and the piece's
+// own Quiet chip at the far right. Then the group's alerts and its Reset.
+// A General section closes the menu.
 // Rows are data (rowsFor/buttonsOf); the widget owns all state; this file
 // draws it and forwards gestures, from the mouse and the keyboard alike.
 import QtQuick
@@ -109,6 +110,16 @@ Panel {
     return { key: key, label: label, needs: needs || "" }
   }
 
+  readonly property var usedKeys: ["bar", "percent", "gib"]
+
+  // Whether a part draws: any of the given toggles is on.
+  function shows(part, keys) {
+    if (!part) return false
+    for (var i = 0; i < keys.length; i++)
+      if (part[keys[i]] === true) return true
+    return false
+  }
+
   function partRow(key, title, chips, sub) {
     return { type: "part", key: key, title: title, chips: chips, sub: sub === true }
   }
@@ -132,7 +143,7 @@ Panel {
   }
 
   // Every row of one group's card, top to bottom: source, pieces in bar
-  // order (sub rows only while they apply), alerts, fans, order.
+  // order (sub rows only while they apply), alerts, fans, reset.
   function rowsFor(id, g, reading) {
     var r = reading || {}
     var rows = []
@@ -176,8 +187,10 @@ Panel {
       rows.push(root.partRow("rpm", "RPM", [root.chip("value", "Value"), root.chip("unit", "Unit", "value")]))
       rows.push({ type: "flag", key: "showStopped", title: "Stopped", label: "Show" })
     }
-    var usageShown = (id === "cpu" || id === "gpu") ? (load.bar === true || load.number === true)
-      : (used.bar === true || used.percent === true || used.gib === true)
+    // The usage alert covers every percentage that warms on it: the load,
+    // the space used, VRAM and swap.
+    var usageShown = root.shows(load, ["bar", "number"]) || root.shows(used, root.usedKeys)
+      || root.shows(g.vram, root.usedKeys) || root.shows(g.swap, root.usedKeys)
     if (typeof g.warnUsage === "number" && usageShown)
       rows.push({ type: "limit", key: "usageLimit", title: "Alert %", warn: "warnUsage", crit: "critUsage", step: 5, unit: "" })
     if (typeof g.warnTemp === "number" && temp.value === true)
@@ -186,13 +199,13 @@ Panel {
       rows.push({ type: "limit", key: "rpmLimit", title: "Alert", warn: "warnRpm", crit: "critRpm", step: 250, unit: "" })
       rows.push({ type: "fans", key: "fans" })
     }
-    rows.push({ type: "footer", key: "footer", title: "Order" })
+    rows.push({ type: "reset", key: "reset", title: "", label: "Reset " + (Metrics.GROUP_LABELS[id] || id) })
     return rows
   }
 
   // What the buttons of one row show and do. A part row's chips add or
   // remove, and its last one, apart at the far right, mutes the piece.
-  function buttonsOf(spec, g, index) {
+  function buttonsOf(spec, g) {
     var out = []
     var i = 0
     if (spec.type === "part") {
@@ -215,10 +228,8 @@ Panel {
       out.push({ act: { t: "limit", field: spec.warn, d: spec.step } })
       out.push({ act: { t: "limit", field: spec.crit, d: -spec.step } })
       out.push({ act: { t: "limit", field: spec.crit, d: spec.step } })
-    } else if (spec.type === "footer") {
-      out.push({ label: "Up", enabled: index > 0, act: { t: "move", d: -1 } })
-      out.push({ label: "Down", enabled: index < root.groupIds.length - 1, act: { t: "move", d: 1 } })
-      out.push({ label: "Reset", right: true, act: { t: "reset" } })
+    } else if (spec.type === "reset") {
+      out.push({ label: spec.label, right: true, act: { t: "reset" } })
     }
     return out
   }
@@ -240,16 +251,26 @@ Panel {
       root.patchField(id, act.field, g[act.field] !== true)
     } else if (act.t === "limit") {
       host.stepGroupLimit(id, act.field, act.d)
-    } else if (act.t === "move") {
-      host.moveGroup(id, act.d)
     } else if (act.t === "reset") {
       host.resetGroup(id)
     }
   }
 
   function pressRow(id, spec, index) {
-    var b = root.buttonsOf(spec, root.groupOf(id), root.groupIds.indexOf(id))[index]
+    var b = root.buttonsOf(spec, root.groupOf(id))[index]
     if (b && b.enabled !== false) root.runAction(id, b.act)
+  }
+
+  // A card header's buttons: 0 open/close, 1 on/off, 2 up, 3 down. The
+  // end cards keep their arrow's place and ignore it.
+  function pressHeader(id, index) {
+    var host = root.hostWidget
+    var at = root.groupIds.indexOf(id)
+    if (!host) return
+    if (index === 0) root.setExpanded(id, !root.isExpanded(id))
+    else if (index === 1) root.patchField(id, "enabled", root.groupOf(id).enabled === false)
+    else if (index === 2 && at > 0) host.moveGroup(id, -1)
+    else if (index === 3 && at < root.groupIds.length - 1) host.moveGroup(id, 1)
   }
 
   // A fan line's buttons: 0 on/off, 1 rename, 2 up, 3 down.
@@ -312,14 +333,13 @@ Panel {
   // ---- keyboard -----------------------------------------------------------
   // Every line the keyboard reaches, top to bottom, each with a stable key:
   // the card headers, the rows of open cards (one line per fan), then
-  // General. ↑/↓ walk the lines; on a header, → opens the card, ← closes
-  // it and Enter switches the group; on a row, ←/→ walk its buttons and
-  // Enter presses one.
+  // General. ↑/↓ walk the lines, ←/→ walk a line's buttons and Enter
+  // presses one; a header's first button opens and closes its card.
   readonly property var navItems: {
     var out = []
     for (var i = 0; i < root.groupIds.length; i++) {
       var id = root.groupIds[i]
-      out.push({ key: id, kind: "header", device: id, count: 0 })
+      out.push({ key: id, kind: "header", device: id, count: 4 })
       if (!root.isExpanded(id)) continue
       var g = root.groupOf(id)
       var rows = root.rowsFor(id, g, root.reading)
@@ -331,7 +351,7 @@ Panel {
             out.push({ key: id + ":fan:" + items[f].key, kind: "fan", device: id, fan: items[f].key, count: 4 })
         } else {
           out.push({ key: id + ":" + rows[j].key, kind: "row", device: id, spec: rows[j],
-            count: root.buttonsOf(rows[j], g, i).length })
+            count: root.buttonsOf(rows[j], g).length })
         }
       }
     }
@@ -370,14 +390,13 @@ Panel {
   function sideCursor(dx) {
     var item = root.navItems[root.navIndex()]
     if (!item) return
-    if (item.kind === "header") root.setExpanded(item.device, dx > 0)
-    else root.cursorButton = Math.max(0, Math.min(item.count - 1, root.cursorButton + dx))
+    root.cursorButton = Math.max(0, Math.min(item.count - 1, root.cursorButton + dx))
   }
 
   function activateCursor() {
     var item = root.navItems[root.navIndex()]
     if (!item) return
-    if (item.kind === "header") root.patchField(item.device, "enabled", root.groupOf(item.device).enabled === false)
+    if (item.kind === "header") root.pressHeader(item.device, root.cursorButton)
     else if (item.kind === "row") root.pressRow(item.device, item.spec, root.cursorButton)
     else if (item.kind === "fan") root.pressFan(item.fan, root.cursorButton)
     else if (item.kind === "general") root.runGeneral(root.generalActs(item.spec)[root.cursorButton])
@@ -461,7 +480,7 @@ Panel {
           Repeater {
             model: root.groupIds
 
-            delegate: Column {
+            delegate: Item {
               id: card
               required property string modelData
               required property int index
@@ -489,37 +508,63 @@ Panel {
               Component.onCompleted: card.syncItemKeys()
 
               width: parent.width
-              spacing: Style.space(2)
+              // An open card stands apart: a tinted ground and a gap below.
+              height: body.height + (card.expanded ? Style.space(8) : 0)
 
-              GroupCard {
-                id: header
-                width: parent.width
-                groupLabel: Metrics.GROUP_LABELS[card.device] || card.device
-                groupGlyph: Metrics.GLYPH[card.device] || ""
-                groupEnabled: card.isOn
-                expanded: card.expanded
-                hasCursor: card.cursorHere
-                previewCells: root.hostWidget ? root.hostWidget.previewCells(card.device) : []
-                previewSecondary: Color.muted
-                previewHot: root.hostWidget ? root.hostWidget.hot : root.fg
-                previewWarmth: root.prefs ? root.prefs.colorIntensity / 100 : 1
-                iconGap: root.hostWidget ? Style.spaceReal(root.hostWidget.iconGap) : 0
-                partGap: root.hostWidget ? Style.spaceReal(root.hostWidget.partGap) : 0
-                foreground: root.fg
-                accent: root.ac
-                fontFamily: root.ff
-
-                onHovered: root.cursorKey = card.device
-                onToggled: root.patchField(card.device, "enabled", !card.isOn)
-                onExpandRequested: root.setExpanded(card.device, !card.expanded)
+              Rectangle {
+                visible: card.expanded
+                width: body.width
+                height: body.height
+                radius: Style.cornerRadius
+                color: Color.menu.selectedBackground
               }
 
-              // Built only while the card is open.
-              Loader {
+              Column {
+                id: body
                 width: parent.width
-                active: card.expanded
-                visible: active
-                sourceComponent: cardRows
+                spacing: Style.space(2)
+
+                GroupCard {
+                  id: header
+                  width: parent.width
+                  groupLabel: Metrics.GROUP_LABELS[card.device] || card.device
+                  groupGlyph: Metrics.GLYPH[card.device] || ""
+                  groupEnabled: card.isOn
+                  expanded: card.expanded
+                  atFirst: card.index === 0
+                  atLast: card.index === root.groupIds.length - 1
+                  hasCursor: card.cursorHere
+                  cursorButton: card.cursorHere ? root.cursorButton : -1
+                  previewCells: root.hostWidget ? root.hostWidget.previewCells(card.device) : []
+                  previewSecondary: Color.muted
+                  previewHot: root.hostWidget ? root.hostWidget.hot : root.fg
+                  previewWarmth: root.prefs ? root.prefs.colorIntensity / 100 : 1
+                  iconGap: root.hostWidget ? Style.spaceReal(root.hostWidget.iconGap) : 0
+                  partGap: root.hostWidget ? Style.spaceReal(root.hostWidget.partGap) : 0
+                  foreground: root.fg
+                  accent: root.ac
+                  fontFamily: root.ff
+
+                  // The pointer lands the cursor on what a click does: the caret.
+                  onHovered: {
+                    if (root.cursorKey === card.device) return
+                    root.cursorKey = card.device
+                    root.cursorButton = 0
+                  }
+                  onPressed: function(index) {
+                    root.cursorKey = card.device
+                    root.cursorButton = index
+                    root.pressHeader(card.device, index)
+                  }
+                }
+
+                // Built only while the card is open.
+                Loader {
+                  width: parent.width
+                  active: card.expanded
+                  visible: active
+                  sourceComponent: cardRows
+                }
               }
 
               Component {
@@ -527,7 +572,7 @@ Panel {
 
                 Column {
                   id: rows
-                  readonly property real rowWidth: width - leftPadding
+                  readonly property real rowWidth: width - leftPadding - rightPadding
                   readonly property var specs: root.rowsFor(card.device, card.group, root.reading)
                   property var rowKeys: []
                   function syncRows() {
@@ -539,6 +584,7 @@ Panel {
 
                   width: card.width
                   leftPadding: Style.space(6)
+                  rightPadding: Style.space(6)
                   bottomPadding: Style.space(6)
                   spacing: Style.space(3)
 
@@ -563,7 +609,7 @@ Panel {
                         SettingRow {
                           title: line.spec.title || ""
                           sub: line.spec.sub === true
-                          buttons: root.buttonsOf(line.spec, card.group, card.index)
+                          buttons: root.buttonsOf(line.spec, card.group)
                           cursorButton: line.cursorHere ? root.cursorButton : -1
                           foreground: root.fg; accent: root.ac; fontFamily: root.ff
                           onPressed: function(index) {

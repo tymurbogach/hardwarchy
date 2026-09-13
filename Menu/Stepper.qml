@@ -14,7 +14,7 @@ RowLayout {
   // The button the keyboard cursor sits on, or -1.
   property int cursorButton: -1
 
-  property color foreground: "#ffffff"
+  property color foreground: Color.foreground
   property string fontFamily: Style.font.family
 
   signal pressed(int index)

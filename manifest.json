@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.tymurbogach.modular-hw-monitor",
   "name": "Modular HW Monitor",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "Tymur Bogach",
   "license": "MIT",
-  "description": "Any metric on any machine: CPU, GPU, memory and every fan, one compact read-out each in the bar. Click one for the menu, where every piece of every read-out has its own setting and a live preview; right-click cycles a read-out between number, bar and both. Reads /proc and /sys/class/hwmon directly — no lm_sensors, no vendor lock-in.",
+  "description": "Any metric on any machine: CPU, GPU, memory, network, disk and every fan, one compact read-out each in the bar. Click one for the menu, where every piece of every read-out has its own setting and a live preview; right-click cycles a read-out between number, bar and both. Reads /proc and /sys directly, with no lm_sensors or vendor tools, and never reads what it does not draw.",
   "kinds": ["bar-widget"],
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {

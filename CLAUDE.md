@@ -38,8 +38,8 @@ node tests/model-tests.js     # pure-logic tests for Model/ and Styles/
 bash tests/collector-tests.sh # bash collector tests, fake hwmon tree
 
 # Lint (part of the ship gate, see SPEC.md section 8)
-qmllint *.qml Menu/*.qml
-omarchy-plugin-validate .
+qmllint -I /usr/share/omarchy/shell *.qml Menu/*.qml
+omarchy plugin validate .
 ```
 
 There is no build step; QML and JS run directly. After editing an
@@ -63,7 +63,7 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
                                                           |
                                                     Metrics.shown() + metricsGroupRuns() (hide, cluster per group)
                                                           |
-                                                    Modes.groupStripCells() (per-group mode + label -> bar cells)
+                                                    Modes.groupStripCells() (group parts -> cells of pieces)
                                                           |
                                                      MetricButton x N    (strip in BarWidget.qml and dev.qml)
 ```
@@ -88,12 +88,15 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
 - **`Model/Metrics.js`** — the core translation layer. `parse()` sanitizes
   one JSON line into a reading object (never throws, garbage → `EMPTY`).
   `metrics(reading, prefs)` turns a reading into the ordered default
-  metric catalog (CPU usage → CPU temp → GPU usage → GPU temp → Memory →
-  fans), computing bar/value strings, severity ramps, glyphs, etc. per
-  SPEC section 3. `orderKeys()` applies the user's saved order. `isHidden`/
-  `shown()` apply the hidden-list filter. Fan display names are
-  deduplicated here (`fanLabels`) — two fans with the same label get
-  `(<chip>)` appended.
+  metric catalog (CPU usage, temp, load average → GPU usage, temp, VRAM,
+  power → memory, swap → net down, up → disk used, read, write → fans),
+  computing bar/value strings, severity ramps, glyphs, etc. per SPEC
+  section 3. Number formatting and the severity ramp (0 at warn, 1 at
+  crit) live here. `orderKeys()` applies the user's saved order.
+  `metricsEffectiveHidden()` + `shown()` drop what draws nothing, and
+  `metricsReadList()` names the collector providers behind what draws.
+  Fan display names are deduplicated here (`fanLabels`): two fans with
+  the same label get `(<chip>)` appended.
 
 - **`Styles/Modes.js`** — turns per-group runs of visible metrics into bar
   **cells** (`groupCells`, `groupStripCells`). One cell per group (one per
@@ -111,13 +114,12 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   complete, valid object (corrupt file → defaults, never a blank bar).
   `prefsUpgradeV1ToV2()` (called by `adoptPrefs` for any file without
   `groups`) handles the v1 shape, the legacy `barStyle` mapping and
-  legacy key renames (`cpu`→`cpu_usage`, etc.); `prefsUpgradeDraft()`
-  handles the pre-release draft of v2 (detected by a top-level
-  `defaultMode`).
+  legacy key renames (`cpu`→`cpu_usage`, etc.); `prefsUpgradeModes()`
+  and `prefsUpgradeWords()` handle the two pre-release drafts of v2 (a
+  top-level `defaultMode`, or one word per piece).
 
-- **`Model/Tooltip.js`** / **`Model/Format.js`** / **`Model/Severity.js`** —
-  tooltip text assembly, number/unit formatting (temp, clocks, GiB pairs),
-  and the severity ramp (0 at warn, 1 at crit) shared by bar-color warming.
+- **`Model/Tooltip.js`** — tooltip text: one headline per metric of a
+  cell, then the group's details once, never repeating a headline.
 
 - **`BarWidget.qml`** — the plugin entry point (`bar-widget` kind). Owns
   **all** state: reads prefs from
@@ -125,8 +127,9 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   (so two bar instances/monitors stay in sync), runs the `sysread --loop`
   `Process`, and derives `allMetrics` → `orderedMetrics` → `stripModel`
   through the pipeline above. Polls every `refresh` seconds (3 by
-  default), 1s while the menu is open, and restarts the collector with
-  the GPU, interface and mount the menu picked. Every prefs mutation goes through `commit()` →
+  default), 1s while the menu is open, and restarts the collector (once
+  per change, via `Qt.callLater`) with the GPU, interface and mount the
+  menu picked and the read list (`MONITOR_READ`). Every prefs mutation goes through `commit()` →
   `Prefs.adoptPrefs()` → `savePrefs()`, so nothing binds to half-written
   state. Left/middle click opens the menu; right-click cycles that group's load.
 

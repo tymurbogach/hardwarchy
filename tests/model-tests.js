@@ -46,8 +46,6 @@ function deepEq(actual, expected, msg) {
 
 var root = path.join(__dirname, "..");
 var files = [
-  "Model/Format.js",
-  "Model/Severity.js",
   "Model/Metrics.js",
   "Styles/Modes.js",
   "Model/Tooltip.js",
@@ -79,28 +77,11 @@ function S(name) {
 }
 
 // Presence of the required API surface.
-var numberOrNull = S("numberOrNull");
-var celsiusToFahrenheit = S("celsiusToFahrenheit");
-var convertTemp = S("convertTemp");
-var tempUnitLabel = S("tempUnitLabel");
-var formatTemp = S("formatTemp");
-var formatTempBar = S("formatTempBar");
-var formatGib = S("formatGib");
-var formatGibPair = S("formatGibPair");
-var formatClockShort = S("formatClockShort");
-var formatClockLong = S("formatClockLong");
-var formatWatts = S("formatWatts");
-var ramp = S("ramp");
-var usageSeverity = S("usageSeverity");
-var tempSeverity = S("tempSeverity");
 var GLYPH = S("GLYPH");
 var GROUP_LABELS = S("GROUP_LABELS");
 var EMPTY = S("EMPTY");
-var LEGACY_KEYS = S("LEGACY_KEYS");
-var migrateKey = S("migrateKey");
 var parse = S("parse");
 var hasReading = S("hasReading");
-var mergeReading = S("mergeReading");
 var fanLabels = S("fanLabels");
 var metricsFn = S("metrics");
 var orderKeys = S("orderKeys");
@@ -122,74 +103,6 @@ var DEFAULTS = S("DEFAULTS");
 var adoptPrefs = S("adoptPrefs");
 var seedPrefs = S("seedPrefs");
 var serialize = S("serialize");
-
-// ---------- Format ----------
-eq(numberOrNull(null), null, "numberOrNull null");
-eq(numberOrNull(undefined), null, "numberOrNull undefined");
-eq(numberOrNull(NaN), null, "numberOrNull NaN");
-eq(numberOrNull(Infinity), null, "numberOrNull Infinity");
-eq(numberOrNull(12), 12, "numberOrNull number");
-eq(numberOrNull("12"), 12, "numberOrNull numeric string");
-eq(numberOrNull(""), null, "numberOrNull empty string");
-eq(numberOrNull("abc"), null, "numberOrNull garbage string");
-eq(numberOrNull(true), null, "numberOrNull boolean");
-
-eq(celsiusToFahrenheit(0), 32, "C to F freezing");
-eq(celsiusToFahrenheit(100), 212, "C to F boiling");
-eq(celsiusToFahrenheit(null), null, "C to F null-safe");
-
-eq(convertTemp(45, "C"), 45, "convertTemp C passthrough");
-approx(convertTemp(45, "F"), 113, 0.001, "convertTemp C to F");
-eq(convertTemp(null, "F"), null, "convertTemp null-safe");
-eq(convertTemp(45, "X"), 45, "convertTemp unknown unit defaults to C");
-
-eq(tempUnitLabel("C"), "°C", "unit label C");
-eq(tempUnitLabel("F"), "°F", "unit label F");
-
-eq(formatTemp(46, "C"), "46 °C", "formatTemp C menu");
-eq(formatTemp(46, "F"), "115 °F", "formatTemp F menu");
-eq(formatTemp(null, "C"), null, "formatTemp null-safe");
-eq(formatTempBar(46, "C"), "46°", "formatTempBar drops unit letter");
-eq(formatTempBar(46, "F"), "115°", "formatTempBar F still converts, no letter");
-eq(formatTempBar(null, "C"), null, "formatTempBar null-safe");
-
-eq(formatGib(9.36), "9.4", "GiB one decimal under 10");
-eq(formatGib(9.04), "9.0", "GiB keeps trailing zero under 10");
-eq(formatGib(62.4), "62", "GiB no decimals at 10 and above");
-eq(formatGib(9.95), "10.0", "GiB rounding under 10");
-eq(formatGib(null), null, "GiB null-safe");
-eq(formatGibPair(9.36, 62.4), "9.4/62G", "GiB pair");
-eq(formatGibPair(null, 62), null, "GiB pair null-safe");
-eq(formatClockShort(3200), "3.2G", "clock short GHz");
-eq(formatClockShort(4000), "4.0G", "clock short keeps one decimal");
-eq(formatClockShort(800), "800M", "clock short MHz");
-eq(formatClockShort(null), null, "clock short null-safe");
-eq(formatClockLong(3200), "3.2 GHz", "clock long GHz");
-eq(formatClockLong(800), "800 MHz", "clock long MHz");
-eq(formatClockLong(null), null, "clock long null-safe");
-eq(formatWatts(45), "45 W", "watts integer");
-eq(formatWatts(45.5), "45.5 W", "watts decimal");
-eq(formatWatts(null), null, "watts null-safe");
-
-// ---------- Severity ----------
-eq(ramp(60, 70, 90), 0, "ramp below warn");
-eq(ramp(70, 70, 90), 0, "ramp at warn");
-approx(ramp(80, 70, 90), 0.5, 0.0001, "ramp midpoint");
-eq(ramp(90, 70, 90), 1, "ramp at crit");
-eq(ramp(99, 70, 90), 1, "ramp above crit");
-eq(ramp(null, 70, 90), 0, "ramp null-safe");
-approx(ramp(50, 40, 60), 0.5, 0.0001, "ramp custom thresholds");
-
-eq(usageSeverity(60), 0, "usage default below warn");
-approx(usageSeverity(80), 0.5, 0.0001, "usage default midpoint");
-eq(usageSeverity(95), 1, "usage default above crit");
-eq(usageSeverity(null), 0, "usage null-safe");
-approx(usageSeverity(50, 40, 60), 0.5, 0.0001, "usage custom thresholds");
-
-eq(tempSeverity(70), 0, "temp default below warn");
-approx(tempSeverity(82.5), 0.5, 0.0001, "temp default midpoint");
-eq(tempSeverity(95), 1, "temp default above crit");
-approx(tempSeverity(50, 40, 60), 0.5, 0.0001, "temp custom thresholds");
 
 // ---------- Parse ----------
 (function testParse() {
@@ -247,19 +160,6 @@ approx(tempSeverity(50, 40, 60), 0.5, 0.0001, "temp custom thresholds");
   ok(hasReading(EMPTY) === false, "hasReading false for EMPTY");
   ok(hasReading(parse("garbage")) === false, "hasReading false for garbage parse");
   ok(hasReading(null) === false, "hasReading false for null");
-
-  // mergeReading: one-time grace after a deliberate collector restart.
-  var before = parse(JSON.stringify({ cpu: 42, gpu: 17, temp: 40, mem: 50 }));
-  var justRestarted = parse(JSON.stringify({ cpu: null, gpu: null, temp: 41, mem: 51 }));
-  var merged = mergeReading(before, justRestarted);
-  eq(merged.cpu, 42, "mergeReading borrows previous cpu when the new one is still priming");
-  eq(merged.gpu, 17, "mergeReading borrows previous gpu when the new one is still priming");
-  eq(merged.temp, 41, "mergeReading never touches non-primed fields");
-  eq(merged.mem, 51, "mergeReading never touches non-primed fields (mem)");
-  var stillNull = parse(JSON.stringify({ cpu: null, gpu: null, temp: 41, mem: 51 }));
-  eq(mergeReading(stillNull, stillNull).cpu, null, "mergeReading has nothing to borrow when the previous reading was already null");
-  eq(mergeReading(null, justRestarted), justRestarted, "mergeReading with no previous reading returns the new one untouched");
-  eq(mergeReading(before, null), null, "mergeReading null-safe on the new reading");
 })();
 
 // ---------- fanLabels ----------
@@ -412,8 +312,6 @@ function prefsWith(id, fields) {
 
   ok(GLYPH.cpu && GLYPH.temp && GLYPH.gpu && GLYPH.mem && GLYPH.fan && GLYPH.down && GLYPH.up, "GLYPH map has every glyph");
   deepEq(GROUP_LABELS, { cpu: "CPU", gpu: "GPU", mem: "RAM", net: "Net", disk: "Disk", fan: "Fans" }, "GROUP_LABELS short English names");
-  eq(migrateKey("cpu"), "cpu_usage", "migrateKey cpu");
-  eq(migrateKey("cpu_usage"), "cpu_usage", "migrateKey passthrough");
 })();
 
 // ---------- ordering and visibility ----------
@@ -423,7 +321,7 @@ function prefsWith(id, fields) {
   var reordered = orderKeys(all, ["mem_usage", "cpu_usage"]);
   eq(reordered[0].key + "," + reordered[1].key, "mem_usage,cpu_usage", "orderKeys honors user order first");
   eq(reordered.length, all.length, "orderKeys keeps all metrics");
-  ok(isHidden("cpu_usage", ["cpu"]) === true, "isHidden migrates legacy keys");
+  ok(isHidden("fan:a/fan1", ["fan:a/fan1"]) && !isHidden("fan:a/fan2", ["fan:a/fan1"]), "isHidden matches keys exactly");
 
   deepEq(metricsExpandGroupOrder(["mem", "cpu"], null), ["mem_usage", "mem_swap", "cpu_usage", "cpu_temp", "cpu_avg"],
     "metricsExpandGroupOrder expands every kind of a group in order");
@@ -633,6 +531,8 @@ function prefsWith(id, fields) {
   ok(tooltipFor(cellFor("net"), r).indexOf("Interface wlan0") >= 0, "a net tooltip names its interface");
   var diskTip = tooltipFor(cellFor("disk"), r);
   ok(diskTip.indexOf("Mount /") >= 0 && diskTip.indexOf("every physical disk") >= 0, "a disk tooltip names its mount and what I/O counts");
+  var usedOnly = groupCells(all.filter(function (m) { return m.key === "disk_usage"; }), d, "disk", false)[0];
+  ok(tooltipFor(usedOnly, r).indexOf("every physical disk") < 0, "a disk tooltip without read or write says nothing about I/O");
   ok(diskTip.indexOf("Disk read: 40 KB/s") >= 0 && diskTip.indexOf("Disk write: 12 KB/s") >= 0, "read and write apart");
   eq(tooltipFor(placeholderCell(), r), "No metrics visible", "the placeholder explains itself");
 })();

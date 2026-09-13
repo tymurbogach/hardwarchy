@@ -22,7 +22,8 @@ preview, a switch and one row per piece, plus a few general settings.
 Single executable bash script, `set -u`, no arguments beyond:
 
 - `sysread` — one JSON line on stdout (CPU % measured over ~0.2 s).
-- `sysread --loop --interval N` — one JSON line every N seconds.
+- `sysread --loop --interval N` — one JSON line every N seconds, the
+  first after ~0.2 s.
 
 Environment:
 
@@ -38,14 +39,16 @@ Environment:
   `mounts`; or `all` (the default) or `none`. A reading it leaves out is
   `null` (`fans` is `[]`). The widget passes the providers behind the
   pieces that draw (`metricsReadList`), and `all` while the menu is open.
+  A GPU source is probed only while `gpu` is read: `nvidia-smi` wakes a
+  sleeping NVIDIA card.
 
 Internals must be organized as provider functions (cpu, memory, hwmon
 temperature, fans, gpu-nvidia, gpu-amd, gpu-intel, clocks, load, net,
 disk). Sourcing split files is allowed as long as the installed tree
 keeps working (`scripts/` ships with the plugin).
 
-The collector finds its sensor files at startup and again every 30
-readings (hotplug). It reads them with shell builtins: a reading forks
+The collector finds the sensor files its wanted providers need at
+startup, and again every 30 readings (hotplug). It reads them with shell builtins: a reading forks
 only `stat` (disk space) and `nvidia-smi` (NVIDIA). The temperature
 reads the CPU package sensor alone when it answers.
 
@@ -86,8 +89,10 @@ All values numbers or `null`. Missing sensor ⇒ `null`, never a fake zero.
   `Package id ...` (`coretemp`); else the hottest reading in (0, 150).
 - GPU sources, probed once at startup: `nvidia-smi` answering, amdgpu
   `gpu_busy_percent`, Intel drm `busy_time` engines. The wanted source
-  wins when it answers, else the first in that order. Percentage
-  functions prime on first call and report `null` (never a wrong 0).
+  wins when it answers, else the first in that order.
+- Every delta (CPU %, Intel GPU %, net and disk rates) is primed about
+  0.2 s before the first line, so no line carries a priming `null` or
+  a wrong 0.
 - NVIDIA detail (utilization, temp, clocks, VRAM MiB, power) comes from ONE
   `nvidia-smi` call per reading. AMD VRAM/power from amdgpu sysfs.
 - Net: the wanted interface, else the non-virtual one with the most
@@ -190,11 +195,13 @@ what I/O counts. A detail never repeats a headline. Nulls are skipped.
 
 ## 6. Menu
 
-One card per group, in bar order. The header shows glyph, name, a live
-preview of the group's cell (drawn by the bar's own component, dimmed
-while the group is off, "nothing shown" when every part is off), an
-on/off switch and an expand button; a click anywhere else on the header
-also expands.
+One card per group, in bar order. The header shows a caret (▸ closed,
+▾ open), glyph, name, a live preview of the group's cell (drawn by the
+bar's own component, dimmed while the group is off, "nothing shown"
+when every part is off), an on/off switch, and ↑ ↓ that move the group
+in the bar. A click anywhere else on the header opens or closes the
+card. An open card sits on a tinted ground (`Color.menu.selectedBackground`)
+with a gap below it.
 
 An open card lists, top to bottom:
 
@@ -209,14 +216,14 @@ An open card lists, top to bottom:
    on/off switch, name (renamed in place; empty resets), value, move
    up/down.
 4. Alerts: warn/crit steppers for the readings that warm and show.
-5. `Order`: Up · Down, and `Reset` for that group alone.
+5. `Reset <group>` at the far right, for that group alone.
 
 Below the cards, **General**: Color %, Unit °C · °F, the three gaps,
 Refresh seconds, Reset all.
 
 Keyboard: ↑/↓ walk every line (headers, the rows of open cards, each
-fan, General); on a header → opens, ← closes, Enter switches the group;
-on a row ←/→ walk its buttons and Enter presses one. A menu taller than
+fan, General); ←/→ walk a line's buttons and Enter presses one. A
+header's buttons are the caret, the switch, ↑ and ↓. A menu taller than
 the screen scrolls, and follows the cursor.
 
 ## 7. Preferences
@@ -280,8 +287,8 @@ File `~/.config/omarchy/modular-hw-monitor.json`, versioned:
   imports in shared components. Env (prefix `MODULAR_HW_MONITOR_`):
   `HIDDEN`, `ENABLE`, `PARTS`, `COLOR`, `FAKE_GPU`, `FAKE_LOAD`, `FONT`.
   Shows strip + menu stand-ins.
-- `tests/model-tests.js` (node): pure-logic tests for format, severity,
-  parse, metrics, visibility, cells, tooltip, prefs migrate/validate.
+- `tests/model-tests.js` (node): pure-logic tests for parse, metrics,
+  visibility, the read list, cells, tooltip, prefs migrate/validate.
 - `tests/collector-tests.sh` (bash): fake hwmon, drm, net, diskstats and
   mounts trees; asserts schema fields incl. null-fallbacks and the
   widget's source choices with their fallbacks.

@@ -14,7 +14,7 @@ Item {
   // Everything Omarchy-flavoured is injected: font, colors, the bar
   // handle for tooltip + click registration.
   property var bar: null
-  // [{ kind: "mark"|"gauge"|"text", text, ratio, pad, quiet, severity, gap }]
+  // [{ kind: "mark"|"gauge"|"text", text, ratio, pad, padQuiet, quiet, severity, gap }]
   property var pieces: []
   property string fontFamily: "monospace"
   property real fontSize: 14

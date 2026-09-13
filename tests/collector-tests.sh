@@ -303,9 +303,16 @@ asked="$(run_choice env MONITOR_READ=temp,fans | python3 "$PY_FIELD" temp fans |
   || fail "MONITOR_READ=temp,fans: expected a temp and the fans, got: $asked"
 pass "MONITOR_READ reads the providers it names and nothing else"
 
-none="$(run_choice env MONITOR_READ=none | python3 "$PY_FIELD" temp fans gpu disk gpu_source | tr '\n' ' ')"
-[[ "$none" == 'null [] null null "amd" ' ]] \
-  || fail "MONITOR_READ=none: expected no reading but the startup GPU pick, got: $none"
-pass "MONITOR_READ=none reads nothing"
+none="$(run_choice env MONITOR_READ=none \
+  | python3 "$PY_FIELD" temp fans gpu disk gpu_source gpu_sources cpu_model | tr '\n' ' ')"
+[[ "$none" == 'null [] null null null [] null ' ]] \
+  || fail "MONITOR_READ=none: expected no reading and no GPU probe, got: $none"
+pass "MONITOR_READ=none reads nothing, not even a GPU probe"
+
+first="$(MONITOR_HWMON_ROOT="$FAKE_ROOT" MONITOR_NET_DEV_FILE="$FAKE_NET_DEV2" \
+  timeout 3 "$SYSREAD" --loop --interval 1 | head -n 1 | python3 "$PY_FIELD" cpu | tr '\n' ' ')"
+[[ "$first" != 'null ' && -n "$first" ]] \
+  || fail "loop mode: expected a primed cpu on the first line, got: $first"
+pass "loop mode primes its rates before the first line"
 
 echo "ALL COLLECTOR TESTS PASSED"
