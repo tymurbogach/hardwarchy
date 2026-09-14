@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.2.0
+
+- The menu title shows the installed version, and an **Update to …**
+  button when GitHub has a newer release. It checks when the menu opens,
+  at most every 6 hours, and only for a git install. The button opens a
+  terminal that shows the changes and asks before it updates, then
+  restarts the shell.
+- Two lines under the title name the machine, the kernel and the uptime.
+- Every open card starts with facts about its hardware: CPU model,
+  cores and threads, peak clock, cache and governor; GPU model and
+  driver; RAM and swap sizes; link type, state, speed and MAC; the drive,
+  its size and the filesystem behind the mount.
+- `sysread --info` prints those facts once, as one JSON line. The menu
+  reads it the first time it opens.
+- The CPU model reads without trademark marks and base clock, in the
+  tooltip too: `Intel Core i7-8550U`.
+
 ## 2.1.0
 
 - The plugin is now Hardwarchy: id `io.github.tymurbogach.hardwarchy`,

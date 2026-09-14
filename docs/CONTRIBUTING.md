@@ -26,11 +26,14 @@ HARDWARCHY_PARTS='cpu.load=bar,number' HARDWARCHY_FAKE_GPU=1 quickshell -p dev.q
 # Run the collector on its own
 ./scripts/sysread                      # one JSON reading on stdout
 ./scripts/sysread --loop --interval 2  # one reading every N seconds
+./scripts/sysread --info               # the static facts the menu shows
+./scripts/update check                 # the version on the remote's HEAD
 MONITOR_HWMON_ROOT=/path/to/fake/hwmon ./scripts/sysread   # other machines
 
 # Tests
 node tests/model-tests.js     # pure-logic tests for Model/ and Styles/
 bash tests/collector-tests.sh # bash collector tests, fake hwmon tree
+bash tests/update-tests.sh    # update check/apply, throwaway git remote
 
 # Lint (part of the ship gate, SPEC.md section 8)
 qmllint -I /usr/share/omarchy/shell *.qml Menu/*.qml
@@ -78,7 +81,15 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   at a fake sensor tree. The widget hands down the menu's source choices
   the same way (`MONITOR_GPU`, `MONITOR_NET_IFACE`, `MONITOR_ROOT_MOUNT`),
   and the JSON lists what the menu can offer (`gpu_sources`,
-  `net.ifaces`, `disk.mounts`).
+  `net.ifaces`, `disk.mounts`). `sysread --info` prints the facts that
+  never change (DMI names, CPU topology, GPU names from `pci.ids`,
+  drives) once, for the menu; `MONITOR_INFO_ROOT` points it at a fake
+  machine.
+
+- **`scripts/update`**: `check` fetches the remote's HEAD and prints its
+  manifest version; `apply` runs `omarchy plugin update` and restarts
+  the shell when the clone moved. The menu's update button runs `apply`
+  in a floating terminal.
 
 - **`Model/Metrics.js`**: the core translation layer. `parse()`
   sanitizes one JSON line into a reading object: it never throws, and
@@ -109,6 +120,11 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   (`cpu`→`cpu_usage`, etc.). `prefsUpgradeModes()` and
   `prefsUpgradeWords()` handle the two pre-release drafts of v2.
 
+- **`Model/Info.js`**: the menu facts. `infoSystemLines()` names the
+  machine, kernel and uptime; `infoRows(id, info, reading)` gives the
+  facts at the top of a card, for the source the reading follows;
+  `infoNewerVersion()` compares versions for the update button.
+
 - **`Model/Tooltip.js`**: tooltip text. One headline per metric of a
   cell, then the group's details once, never a repeated headline.
 
@@ -119,7 +135,9 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   (`legacyNames`). It runs the `sysread --loop` `Process` and derives
   `allMetrics` → `orderedMetrics` → `stripModel` through the pipeline
   above. It polls every `refresh` seconds (3 by default), and every
-  second while the menu is open. It restarts the collector once per
+  second while the menu is open. The first open runs `sysread --info`
+  once; every open may run `scripts/update check` (at most every 6 h).
+  It restarts the collector once per
   change (through `Qt.callLater`) with the menu's GPU, interface, mount
   and read list (`MONITOR_READ`). Every prefs change goes through
   `commit()` → `Prefs.adoptPrefs()` → `savePrefs()`, so nothing binds to
@@ -131,8 +149,11 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   the functions of `BarWidget.qml` (`patchGroup`, `resetGroup`,
   `stepGroupLimit`, `previewCells`, `moveGroup`, `toggleFanHidden`,
   `renameFan`, `moveFan`, `setUnit`, `stepColorIntensity`, `stepGap`,
-  `stepRefresh`, `resetDefaults`). There is one card per group: a header
-  with a live preview, one row per cell piece (rows as data in
+  `stepRefresh`, `resetDefaults`, `runUpdate`). The title carries the
+  version and the update button, two lines name the machine. There is
+  one card per group: a header
+  with a live preview, the hardware facts (`Menu/InfoRow`), one row per
+  cell piece (rows as data in
   `rowsFor`/`buttonsOf`, one flat `navItems` list for the keyboard),
   then a General section (SPEC section 6). Cards and rows repeat over
   stable ids, not per-reading arrays, so a reading or a click does not
@@ -151,7 +172,8 @@ scripts/sysread  --loop -->  stdout JSON lines  -->  Process/SplitParser (BarWid
   without an installed plugin.
 
 - **`Menu/`**: small presentational parts used only by `Panel.qml`
-  (`GroupCard`, `SettingRow`, `LimitRow`, `MetricRow`, `Stepper`).
+  (`GroupCard`, `InfoRow`, `SettingRow`, `LimitRow`, `MetricRow`,
+  `Stepper`).
 
 ### Invariants
 

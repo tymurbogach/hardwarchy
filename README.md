@@ -57,10 +57,12 @@ space with reads and writes, and the fans.
   <img src="docs/images/menu-net.png" alt="The menu with the Net card open" width="32%">
 </p>
 
-*Left: the CPU card, one row per piece, each with its Quiet chip.
-Middle: the Fans card, with a renamed fan and a phantom one switched
-off. Right: the Net card, which picks the link. Every header carries a
-live preview, a switch and the arrows that move the group in the bar.*
+*Left: the CPU card opens with the processor's facts, then one row per
+piece, each with its Quiet chip. Middle: the Fans card, with a renamed
+fan and a phantom one switched off. Right: the Net card names the link
+and picks it. The title carries the version and the machine; every
+header carries a live preview, a switch and the arrows that move the
+group in the bar.*
 
 ## Why
 
@@ -91,6 +93,12 @@ reach the bar, in which order, and what each one draws.
 Network and Disk start switched off. A machine that exposes nothing
 readable for a group simply lists no card for it instead of zeros.
 
+The menu also names the hardware behind each card: the CPU model, cores
+and threads, peak clock, cache and governor; the GPU model and driver;
+RAM and swap sizes; the link type, speed and MAC; the drive, its size
+and filesystem. Two lines under the title name the machine, the kernel
+and the uptime.
+
 Temperature prefers the real CPU package sensor — `Tctl`/`Tdie` on AMD,
 `Package id 0` on Intel — and falls back to the hottest readable sensor.
 
@@ -114,11 +122,15 @@ apart — and you can rename either.
   Network and Fans it opens the menu); middle-click opens the menu too
 - **Keyboard** — ↑ ↓ walk every line, ← → walk a line's buttons and
   Enter presses one; a card's first button (the caret) opens and closes it
+- **Update** — when GitHub has a newer release, the title shows
+  **Update to …** beside the version; it opens a terminal that shows the
+  changes and asks first, then restarts the shell
 
 ### Build each read-out your way
 
 Each group draws one read-out (each fan its own), left to right. An open
-card lists one row per piece, in the same order. The chips on the left
+card starts with the facts about its hardware, then lists one row per
+piece, in the same order. The chips on the left
 **add or remove** — light several and you get all of them — and every
 row ends with its own **Quiet** chip, a half-filled circle at the far
 right: the piece takes the muted color and never warms. For CPU:
@@ -191,10 +203,11 @@ The widget mounts in the right bar section. Move it with:
 omarchy bar move io.github.tymurbogach.hardwarchy --section center
 ```
 
-Update later with:
+Update later with the **Update to …** button in the menu title, or:
 
 ```bash
 omarchy plugin update io.github.tymurbogach.hardwarchy
+omarchy-restart-shell   # only a restart loads the new QML
 ```
 
 > Hardwarchy was called Modular HW Monitor before 2.1. The old id does
@@ -219,10 +232,19 @@ rm -f ~/.config/omarchy/modular-hw-monitor.json ~/.config/omarchy/any-monitor.js
 
 - Omarchy 4 (Quattro) with `omarchy-shell`
 - `bash` — nothing else. No `lm_sensors`, no kernel modules, no vendor tools.
+- `git`, for the update check only. `omarchy plugin add` needs it anyway.
 
 Readings come from `/proc/stat`, `/proc/meminfo`, `/proc/cpuinfo`,
 `/proc/loadavg`, `/proc/net/dev`, `/proc/diskstats`, `/proc/mounts` and
-`/sys/class/hwmon`, all readable without privileges.
+`/sys/class/hwmon`, all readable without privileges. The menu's facts
+add `/sys/class/dmi`, `/sys/class/drm`, `/sys/class/net`,
+`/sys/class/block`, `/proc/swaps` and the `pci.ids` list from hwdata,
+read once, the first time the menu opens.
+
+Hardwarchy reaches the network for one thing only: the update check,
+a `git fetch` from the repository it was installed from. It runs when
+the menu opens, at most every 6 hours, and never for a copy that is not
+a git clone.
 
 The collector reads only what the bar draws: a group or piece you
 switch off is not read at all. While the menu is open it reads
@@ -289,15 +311,19 @@ The collector runs on its own:
 ```bash
 ./scripts/sysread                      # one reading
 ./scripts/sysread --loop --interval 2  # stream one reading every 2 seconds
+./scripts/sysread --info               # the facts the menu shows, once
 MONITOR_NET_IFACE=wlan0 MONITOR_ROOT_MOUNT=/home ./scripts/sysread   # other sources
+./scripts/update check                 # the version on the remote's HEAD
 ```
 
-Set `MONITOR_HWMON_ROOT` to a directory of fake `hwmon` nodes to test
+Set `MONITOR_HWMON_ROOT` to a directory of fake `hwmon` nodes, or
+`MONITOR_INFO_ROOT` to a fake filesystem root for `--info`, to test
 machines you do not have. Tests:
 
 ```bash
 node tests/model-tests.js   # pure-logic tests
 bash tests/collector-tests.sh
+bash tests/update-tests.sh  # a throwaway git remote, the omarchy CLI stubbed
 ```
 
 ## A note on reloading
