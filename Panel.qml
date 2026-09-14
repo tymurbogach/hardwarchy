@@ -5,7 +5,9 @@
 // source (GPU, link, mount), then one row per piece of the cell in bar
 // order: chips that add or remove what the piece draws, and the piece's
 // own Quiet chip at the far right. Then the group's alerts and its Reset.
-// A General section closes the menu.
+// A General section closes the menu. Under the title, two lines name the
+// machine and its kernel, and every open card starts with facts about
+// the hardware it reads.
 // Rows are data (rowsFor/buttonsOf); the widget owns all state; this file
 // draws it and forwards gestures, from the mouse and the keyboard alike.
 import QtQuick
@@ -14,6 +16,7 @@ import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model/Metrics.js" as Metrics
+import "Model/Info.js" as Info
 import "Menu"
 
 Panel {
@@ -32,6 +35,19 @@ Panel {
   readonly property var reading: hostWidget ? hostWidget.reading : ({})
   readonly property var groupRuns:
     hostWidget ? Metrics.metricsGroupRuns(hostWidget.orderedMetrics) : []
+  readonly property var info: hostWidget ? hostWidget.info : null
+
+  // The uptime in the system line ticks while the menu is open.
+  property real nowSeconds: Date.now() / 1000
+  readonly property var systemLines: Info.infoSystemLines(root.info, root.nowSeconds)
+
+  Timer {
+    interval: 30000
+    running: root.opened
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.nowSeconds = Date.now() / 1000
+  }
 
   // Readings arrive every second while the menu is open, and each one
   // builds a fresh `groupRuns` array. A Repeater fed that array would
@@ -463,7 +479,28 @@ Panel {
             font.family: root.ff
             font.pixelSize: Style.font.subtitle
             font.bold: true
+          }
+
+          // The machine, then kernel and uptime.
+          Column {
+            width: parent.width
+            visible: root.systemLines.length > 0
             bottomPadding: Style.space(2)
+
+            Repeater {
+              model: root.systemLines
+
+              delegate: Text {
+                required property string modelData
+                width: parent.width
+                text: modelData
+                elide: Text.ElideRight
+                color: root.fg
+                opacity: 0.55
+                font.family: root.ff
+                font.pixelSize: Style.font.caption
+              }
+            }
           }
 
           Text {
@@ -580,13 +617,46 @@ Panel {
                     if (!root.sameList(keys, rows.rowKeys)) rows.rowKeys = keys
                   }
                   onSpecsChanged: rows.syncRows()
-                  Component.onCompleted: rows.syncRows()
+                  // Facts about the hardware the card reads, above its rows.
+                  readonly property var infoSpecs: Info.infoRows(card.device, root.info, root.reading)
+                  property var infoKeys: []
+                  function syncInfo() {
+                    var keys = root.idsOf(rows.infoSpecs, "key")
+                    if (!root.sameList(keys, rows.infoKeys)) rows.infoKeys = keys
+                  }
+                  onInfoSpecsChanged: rows.syncInfo()
+                  Component.onCompleted: {
+                    rows.syncRows()
+                    rows.syncInfo()
+                  }
+
 
                   width: card.width
                   leftPadding: Style.space(6)
                   rightPadding: Style.space(6)
                   bottomPadding: Style.space(6)
                   spacing: Style.space(3)
+
+                  Repeater {
+                    model: rows.infoKeys
+
+                    delegate: InfoRow {
+                      required property string modelData
+                      readonly property var fact: root.findBy(rows.infoSpecs, "key", modelData) || ({ title: "", value: "" })
+                      width: rows.rowWidth
+                      title: fact.title
+                      value: fact.value
+                      foreground: root.fg
+                      fontFamily: root.ff
+                    }
+                  }
+
+                  // A hairline between the facts and the settings.
+                  PanelSeparator {
+                    visible: rows.infoKeys.length > 0
+                    width: rows.rowWidth
+                    foreground: root.fg
+                  }
 
                   Repeater {
                     model: rows.rowKeys

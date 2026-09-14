@@ -1,4 +1,4 @@
-// Menu facts for Hardwarchy: the system line under the title, the info
+// Menu facts for Hardwarchy: the system lines under the title, the info
 // rows at the top of a group's card, and the version check behind the
 // update button. Input is the `sysread --info` object (raw facts that
 // never change) and the live reading (which GPU, link and mount).
@@ -164,23 +164,30 @@ function infoGpuName(gpu) {
 
 // ---- what the menu shows ------------------------------------------------
 
-// The pieces of the line under the menu title: machine, kernel, uptime.
-function infoSystemParts(info, nowSeconds) {
+// The lines under the menu title: the machine, then kernel and uptime.
+// Two fixed lines, so a narrow menu never breaks one mid-phrase.
+function infoSystemLines(info, nowSeconds) {
   var s = infoObj(infoObj(info).system);
-  var parts = [];
   var boot = infoNum(s.boot_time);
   var now = infoNum(nowSeconds);
-  var candidates = [
-    infoMachine(s),
-    infoKernel(s.kernel),
-    (boot !== null && now !== null && now >= boot) ? infoUptime(now - boot) : null
-  ];
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i] !== null) {
-      parts.push(candidates[i]);
-    }
+  var second = [];
+  var kernel = infoKernel(s.kernel);
+  var uptime = (boot !== null && now !== null && now >= boot) ? infoUptime(now - boot) : null;
+  if (kernel !== null) {
+    second.push(kernel);
   }
-  return parts;
+  if (uptime !== null) {
+    second.push(uptime);
+  }
+  var lines = [];
+  var machine = infoMachine(s);
+  if (machine !== null) {
+    lines.push(machine);
+  }
+  if (second.length > 0) {
+    lines.push(second.join(" · "));
+  }
+  return lines;
 }
 
 function infoFind(list, field, value) {

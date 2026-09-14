@@ -6,6 +6,7 @@ import qs.Ui
 import "Model/Metrics.js" as Metrics
 import "Model/Prefs.js" as Prefs
 import "Model/Tooltip.js" as Tips
+import "Model/Info.js" as Info
 import "Styles/Modes.js" as Modes
 
 BarWidget {
@@ -341,6 +342,22 @@ BarWidget {
   // when several of them move together (opening the menu changes both the
   // interval and the read list).
   onCollectorKeyChanged: Qt.callLater(root.restartCollector)
+
+  // ---- menu facts -----------------------------------------------------
+  // Facts that never change (`sysread --info`), read once, the first time
+  // the menu opens: a menu nobody opens costs nothing.
+  property var info: null
+
+  onOpenedChanged: if (root.opened && !root.info && !infoReader.running) infoReader.running = true
+
+  Process {
+    id: infoReader
+    command: [root.readerPath, "--info"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.info = Info.infoParse(text)
+    }
+  }
 
   Loader {
     id: panelLoader

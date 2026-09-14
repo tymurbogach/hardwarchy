@@ -690,7 +690,7 @@ function prefsWith(id, fields) {
   var infoMachine = S("infoMachine");
   var infoGpuName = S("infoGpuName");
   var infoUptime = S("infoUptime");
-  var infoSystemParts = S("infoSystemParts");
+  var infoSystemLines = S("infoSystemLines");
   var infoRows = S("infoRows");
   var infoNewerVersion = S("infoNewerVersion");
 
@@ -732,9 +732,10 @@ function prefsWith(id, fields) {
       { mount: "/data", fs: "ext4", device: null, model: null, size_b: null }]
   };
 
-  deepEq(infoSystemParts(info, 1000 + 12 * 3600 + 23 * 60), ["Lenovo ThinkPad P14s Gen 6", "Linux 7.2.3", "up 12 h 23 min"],
-    "system line: machine, kernel, uptime");
-  deepEq(infoSystemParts({ system: { kernel: "6.1" } }, null), ["Linux 6.1"], "system line: missing facts drop out");
+  deepEq(infoSystemLines(info, 1000 + 12 * 3600 + 23 * 60), ["Lenovo ThinkPad P14s Gen 6", "Linux 7.2.3 · up 12 h 23 min"],
+    "system lines: the machine, then kernel and uptime");
+  deepEq(infoSystemLines({ system: { kernel: "6.1" } }, null), ["Linux 6.1"], "system lines: missing facts drop out");
+  deepEq(infoSystemLines(null, 5), [], "system lines: no info yet");
 
   function rowsText(rows) {
     return rows.map(function (r) { return r.title + "=" + r.value; });
