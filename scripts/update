@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# update - find and install a newer Hardwarchy, for the menu's update
+# button. The installed copy is a git clone, and `omarchy plugin update`
+# moves it, as for any other plugin. See SPEC section 6.1.
+#
+#   update check   print the version on the remote's HEAD. Print nothing
+#                  when this copy is not a git clone. Fail when the
+#                  remote cannot be reached.
+#   update apply   run `omarchy plugin update`, which shows the changes
+#                  and asks first. Then restart the shell if the copy
+#                  moved: only a restart reloads the widget's QML.
+#
+# git replaces this file while `apply` runs. Bash has read every
+# function, and the whole last line, before the first one starts.
+set -u
+
+PLUGIN_ID="io.github.tymurbogach.hardwarchy"
+
+check() {
+  local dir="$1" manifest
+  # The same test `omarchy plugin update` makes before it pulls.
+  [[ -d "$dir/.git" ]] || return 0
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes}" \
+    timeout 10 git -C "$dir" fetch --quiet origin HEAD 2>/dev/null || return 1
+  manifest="$(git -C "$dir" show FETCH_HEAD:manifest.json 2>/dev/null)" || return 1
+  [[ "$manifest" =~ \"version\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+apply() {
+  local dir="$1" before after
+  before="$(git -C "$dir" rev-parse HEAD)" || return 1
+  omarchy plugin update "$PLUGIN_ID" || return 1
+  after="$(git -C "$dir" rev-parse HEAD)" || return 1
+  [[ "$before" != "$after" ]] || return 0
+  echo "Restarting the shell to load the new version."
+  omarchy-restart-shell
+}
+
+main() {
+  local src="${BASH_SOURCE[0]}" dir
+  [[ "$src" == */* ]] || src="./$src"
+  dir="$(cd -P -- "${src%/*}/.." && pwd -P)" || return 1
+  case "${1:-}" in
+    check) check "$dir" ;;
+    apply) apply "$dir" ;;
+    *)
+      echo "usage: update check|apply" >&2
+      return 1
+      ;;
+  esac
+}
+
+main "$@"; exit $?

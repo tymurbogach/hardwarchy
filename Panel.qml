@@ -5,9 +5,10 @@
 // source (GPU, link, mount), then one row per piece of the cell in bar
 // order: chips that add or remove what the piece draws, and the piece's
 // own Quiet chip at the far right. Then the group's alerts and its Reset.
-// A General section closes the menu. Under the title, two lines name the
-// machine and its kernel, and every open card starts with facts about
-// the hardware it reads.
+// A General section closes the menu. The title carries the version and,
+// when GitHub has a newer release, the update button; under it two lines
+// name the machine and its kernel, and every open card starts with facts
+// about the hardware it reads.
 // Rows are data (rowsFor/buttonsOf); the widget owns all state; this file
 // draws it and forwards gestures, from the mouse and the keyboard alike.
 import QtQuick
@@ -36,6 +37,9 @@ Panel {
   readonly property var groupRuns:
     hostWidget ? Metrics.metricsGroupRuns(hostWidget.orderedMetrics) : []
   readonly property var info: hostWidget ? hostWidget.info : null
+  readonly property string version: hostWidget ? hostWidget.version : ""
+  readonly property string latestVersion: hostWidget ? hostWidget.latestVersion : ""
+  readonly property bool updateAvailable: hostWidget ? hostWidget.updateAvailable : false
 
   // The uptime in the system line ticks while the menu is open.
   property real nowSeconds: Date.now() / 1000
@@ -47,6 +51,10 @@ Panel {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.nowSeconds = Date.now() / 1000
+  }
+
+  function runUpdate() {
+    if (root.hostWidget) root.hostWidget.runUpdate()
   }
 
   // Readings arrive every second while the menu is open, and each one
@@ -348,11 +356,12 @@ Panel {
 
   // ---- keyboard -----------------------------------------------------------
   // Every line the keyboard reaches, top to bottom, each with a stable key:
-  // the card headers, the rows of open cards (one line per fan), then
-  // General. ↑/↓ walk the lines, ←/→ walk a line's buttons and Enter
+  // the update button while there is one, the card headers, the rows of
+  // open cards (one line per fan), then General. ↑/↓ walk the lines, ←/→ walk a line's buttons and Enter
   // presses one; a header's first button opens and closes its card.
   readonly property var navItems: {
     var out = []
+    if (root.updateAvailable) out.push({ key: "update", kind: "update", count: 1 })
     for (var i = 0; i < root.groupIds.length; i++) {
       var id = root.groupIds[i]
       out.push({ key: id, kind: "header", device: id, count: 4 })
@@ -387,8 +396,13 @@ Panel {
     return -1
   }
 
+  // The cursor starts on the first card, never on the update button, so
+  // an early Enter cannot start an update.
   function resetCursor() {
-    root.cursorKey = root.navItems.length > 0 ? root.navItems[0].key : ""
+    var key = ""
+    for (var i = 0; i < root.navItems.length && key === ""; i++)
+      if (root.navItems[i].kind !== "update") key = root.navItems[i].key
+    root.cursorKey = key
     root.cursorButton = 0
   }
 
@@ -412,7 +426,8 @@ Panel {
   function activateCursor() {
     var item = root.navItems[root.navIndex()]
     if (!item) return
-    if (item.kind === "header") root.pressHeader(item.device, root.cursorButton)
+    if (item.kind === "update") root.runUpdate()
+    else if (item.kind === "header") root.pressHeader(item.device, root.cursorButton)
     else if (item.kind === "row") root.pressRow(item.device, item.spec, root.cursorButton)
     else if (item.kind === "fan") root.pressFan(item.fan, root.cursorButton)
     else if (item.kind === "general") root.runGeneral(root.generalActs(item.spec)[root.cursorButton])
@@ -472,13 +487,53 @@ Panel {
           width: flick.width
           spacing: Style.space(3)
 
-          Text {
+          RowLayout {
             width: parent.width
-            text: "Hardwarchy"
-            color: root.fg
-            font.family: root.ff
-            font.pixelSize: Style.font.subtitle
-            font.bold: true
+            spacing: Style.space(6)
+
+            Text {
+              Layout.alignment: Qt.AlignBaseline
+              text: "Hardwarchy"
+              color: root.fg
+              font.family: root.ff
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              Layout.alignment: Qt.AlignBaseline
+              visible: root.version !== ""
+              text: root.version
+              color: root.fg
+              opacity: 0.5
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Button {
+              id: updateButton
+              Layout.alignment: Qt.AlignVCenter
+              visible: root.updateAvailable
+              // Omarchy's own update glyph; a bordered chip, so the
+              // keyboard cursor shows on it like on any other chip.
+              text: "\uf021  Update to " + root.latestVersion
+              tooltipText: "Opens a terminal that shows the changes and asks before it updates"
+              bordered: true
+              hasCursor: root.cursorKey === "update"
+              onHasCursorChanged: if (hasCursor) root.ensureVisible(updateButton)
+              foreground: root.fg
+              accent: root.ac
+              fontFamily: root.ff
+              fontSize: Style.font.caption
+              horizontalPadding: Style.space(6)
+              verticalPadding: Style.space(2)
+              onClicked: {
+                root.cursorKey = "update"
+                root.runUpdate()
+              }
+            }
           }
 
           // The machine, then kernel and uptime.
@@ -629,7 +684,6 @@ Panel {
                     rows.syncRows()
                     rows.syncInfo()
                   }
-
 
                   width: card.width
                   leftPadding: Style.space(6)

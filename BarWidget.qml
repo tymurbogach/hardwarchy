@@ -343,12 +343,59 @@ BarWidget {
   // interval and the read list).
   onCollectorKeyChanged: Qt.callLater(root.restartCollector)
 
-  // ---- menu facts -----------------------------------------------------
+  // ---- menu facts and updates -----------------------------------------
   // Facts that never change (`sysread --info`), read once, the first time
   // the menu opens: a menu nobody opens costs nothing.
   property var info: null
+  // The installed version, from the manifest, so the number lives in one
+  // place.
+  property string version: ""
+  // The version on the remote's HEAD, once `scripts/update check` found one.
+  property string latestVersion: ""
+  readonly property bool updateAvailable: Info.infoNewerVersion(root.latestVersion, root.version)
+  // When the last check started (ms since the epoch), and whether it
+  // failed: a failed check (offline) retries sooner than a clean one.
+  property real updateCheckedAt: 0
+  property bool updateCheckFailed: false
+  readonly property string updaterPath:
+    String(Qt.resolvedUrl("scripts/update")).replace("file://", "")
 
-  onOpenedChanged: if (root.opened && !root.info && !infoReader.running) infoReader.running = true
+  onOpenedChanged: {
+    if (!root.opened) return
+    if (!root.info && !infoReader.running) infoReader.running = true
+    root.checkForUpdate()
+  }
+
+  // At most every 6 h, or 15 min after a failure, and only while the
+  // menu opens: the check reaches GitHub, so it never runs unseen.
+  function checkForUpdate() {
+    var wait = (root.updateCheckFailed ? 15 * 60 : 6 * 3600) * 1000
+    if (updateChecker.running) return
+    if (root.updateCheckedAt > 0 && Date.now() - root.updateCheckedAt < wait) return
+    root.updateCheckedAt = Date.now()
+    updateChecker.running = true
+  }
+
+  // A floating terminal shows the changes and asks before it updates;
+  // the shell restarts afterwards, and with it this widget.
+  function runUpdate() {
+    root.close()
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+      "'" + root.updaterPath + "' apply"])
+  }
+
+  FileView {
+    path: String(Qt.resolvedUrl("manifest.json")).replace("file://", "")
+    printErrors: false
+    onLoaded: {
+      try {
+        var manifest = JSON.parse(text())
+        root.version = typeof manifest.version === "string" ? manifest.version : ""
+      } catch (e) {
+        root.version = ""
+      }
+    }
+  }
 
   Process {
     id: infoReader
@@ -357,6 +404,20 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: root.info = Info.infoParse(text)
     }
+  }
+
+  Process {
+    id: updateChecker
+    command: [root.updaterPath, "check"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      // Empty means not a git install, or a failure: keep what was found.
+      onStreamFinished: {
+        var found = text.trim()
+        if (found !== "") root.latestVersion = found
+      }
+    }
+    onExited: function(exitCode) { root.updateCheckFailed = exitCode !== 0 }
   }
 
   Loader {
