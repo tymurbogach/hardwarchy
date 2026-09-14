@@ -315,4 +315,147 @@ first="$(MONITOR_HWMON_ROOT="$FAKE_ROOT" MONITOR_NET_DEV_FILE="$FAKE_NET_DEV2" \
   || fail "loop mode: expected a primed cpu on the first line, got: $first"
 pass "loop mode primes its rates before the first line"
 
+# --- --info: static facts from a fake machine ------------------------------
+INFO_ROOT="$FAKE_ROOT/machine"
+fake() { mkdir -p "$INFO_ROOT/$(dirname "$1")"; printf '%s\n' "$2" > "$INFO_ROOT/$1"; }
+fake sys/class/dmi/id/sys_vendor "LENOVO"
+fake sys/class/dmi/id/product_name "21QTCTO1WW"
+fake sys/class/dmi/id/product_version "ThinkPad P14s Gen 6"
+fake sys/class/dmi/id/board_vendor "LENOVO"
+fake sys/class/dmi/id/board_name "21QTCTO1WW"
+fake proc/sys/kernel/osrelease "7.2.3-arch1-3"
+fake proc/stat 'cpu  1 2 3 4
+btime 1789340805'
+# Two cores with two threads each: four processors, two (package, core) pairs.
+fake proc/cpuinfo 'processor	: 0
+model name	: Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz
+physical id	: 0
+core id		: 0
+
+processor	: 1
+model name	: Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz
+physical id	: 0
+core id		: 1
+
+processor	: 2
+physical id	: 0
+core id		: 0
+
+processor	: 3
+physical id	: 0
+core id		: 1'
+fake sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq "4000000"
+fake sys/devices/system/cpu/cpu1/cpufreq/cpuinfo_max_freq "4200000"
+fake sys/devices/system/cpu/cpu0/cpufreq/scaling_governor "powersave"
+fake sys/devices/system/cpu/cpu0/cpufreq/scaling_driver "intel_pstate"
+fake sys/devices/system/cpu/cpu0/cache/index0/level "1"
+fake sys/devices/system/cpu/cpu0/cache/index0/size "48K"
+fake sys/devices/system/cpu/cpu0/cache/index3/level "3"
+fake sys/devices/system/cpu/cpu0/cache/index3/size "8M"
+# One Intel GPU with its driver link; card0-eDP-1 is a connector, not a card.
+fake sys/devices/pci0/gpu/vendor "0x8086"
+fake sys/devices/pci0/gpu/device "0x7D51"
+mkdir -p "$INFO_ROOT/sys/bus/pci/drivers/xe" "$INFO_ROOT/sys/class/drm/card0" "$INFO_ROOT/sys/class/drm/card0-eDP-1"
+ln -s ../../../devices/pci0/gpu "$INFO_ROOT/sys/class/drm/card0/device"
+ln -s ../../../bus/pci/drivers/xe "$INFO_ROOT/sys/devices/pci0/gpu/driver"
+fake usr/share/hwdata/pci.ids '# comment
+1002  Advanced Micro Devices, Inc. [AMD/ATI]
+	7d51  Not this one
+8086  Intel Corporation
+	7d50  Some other GPU
+	7d51  Arrow Lake-P [Arc Pro 130T/140T]
+		17aa 2345  A subsystem line'
+fake proc/meminfo 'MemTotal:       65240496 kB
+MemFree:         1000000 kB'
+fake proc/swaps 'Filename				Type		Size		Used		Priority
+/swap/swapfile                          file		65241572	0		0
+/dev/zram0                              partition	65240060	0		100'
+# A Wi-Fi link, a wired one at 1 Gb/s, a VPN, and loopback (left out).
+fake sys/class/net/wlan0/operstate "up"
+fake sys/class/net/wlan0/address "c8:95:ce:31:cc:2f"
+fake sys/class/net/wlan0/speed "-1"
+mkdir -p "$INFO_ROOT/sys/class/net/wlan0/wireless" "$INFO_ROOT/sys/class/net/wlan0/device"
+fake sys/class/net/eth0/operstate "up"
+fake sys/class/net/eth0/address "a8:2b:dd:66:32:ac"
+fake sys/class/net/eth0/speed "1000"
+mkdir -p "$INFO_ROOT/sys/class/net/eth0/device"
+fake sys/class/net/tailscale0/operstate "unknown"
+fake sys/class/net/lo/operstate "unknown"
+# / sits on LUKS (dm-0) on nvme0n1p2; /boot on nvme0n1p1; /data on sda1.
+fake sys/devices/nvme/nvme0n1/size "2000409264"
+fake sys/devices/nvme/nvme0n1/device/model "SAMSUNG MZVLC1T0HFLU-00BLL"
+fake sys/devices/nvme/nvme0n1/nvme0n1p1/partition "1"
+fake sys/devices/nvme/nvme0n1/nvme0n1p1/size "2097152"
+fake sys/devices/nvme/nvme0n1/nvme0n1p2/partition "2"
+fake sys/devices/nvme/nvme0n1/nvme0n1p2/size "1998311424"
+fake sys/devices/virtual/dm-0/dm/name "root"
+fake sys/devices/virtual/dm-0/size "1998278656"
+mkdir -p "$INFO_ROOT/sys/devices/virtual/dm-0/slaves/nvme0n1p2" "$INFO_ROOT/sys/class/block"
+for node in nvme/nvme0n1 nvme/nvme0n1/nvme0n1p1 nvme/nvme0n1/nvme0n1p2 virtual/dm-0; do
+  ln -s "../../devices/$node" "$INFO_ROOT/sys/class/block/${node##*/}"
+done
+fake proc/mounts 'proc /proc proc rw 0 0
+/dev/mapper/root / btrfs rw 0 0
+/dev/mapper/root /home btrfs rw 0 0
+/dev/nvme0n1p1 /boot vfat rw 0 0
+/dev/sdz1 /data ext4 rw 0 0'
+
+OUT_INFO="$FAKE_ROOT.info.json"
+MONITOR_INFO_ROOT="$INFO_ROOT" "$SYSREAD" --info > "$OUT_INFO" 2>"$FAKE_ROOT.stderr-info" \
+  || { cat "$FAKE_ROOT.stderr-info" >&2; fail "sysread --info exited non-zero"; }
+[[ "$(wc -l < "$OUT_INFO")" -eq 1 ]] || fail "sysread --info must print exactly one line"
+
+PY_ASSERT_INFO="$FAKE_ROOT/assert_info.py"
+cat > "$PY_ASSERT_INFO" <<'PYEOF'
+import json, sys
+
+doc = json.load(open(sys.argv[1]))
+failures = []
+
+def check(name, got, want):
+    if got == want:
+        print(f"PASS: {name}")
+    else:
+        print(f"FAIL: {name} (expected {want!r}, got {got!r})", file=sys.stderr)
+        failures.append(name)
+
+check("info marker", doc.get("info"), 1)
+check("system facts, raw", doc.get("system"), {
+    "vendor": "LENOVO", "product": "21QTCTO1WW", "version": "ThinkPad P14s Gen 6",
+    "board_vendor": "LENOVO", "board": "21QTCTO1WW",
+    "kernel": "7.2.3-arch1-3", "boot_time": 1789340805})
+check("cpu: clean model, cores vs threads, fastest core, last-level cache", doc.get("cpu"), {
+    "model": "Intel Core i7-8550U", "cores": 2, "threads": 4, "max_mhz": 4200,
+    "cache_kib": 8192, "cache_level": 3, "governor": "powersave", "driver": "intel_pstate"})
+check("gpus: card0 only, named from pci.ids, driver from its link", doc.get("gpus"), [
+    {"source": "intel", "name": "Arrow Lake-P [Arc Pro 130T/140T]", "driver": "xe", "pci": "8086:7d51"}])
+check("mem: total and every swap, zram named", doc.get("mem"), {
+    "total_kib": 65240496,
+    "swaps": [{"kind": "file", "size_kib": 65241572}, {"kind": "zram", "size_kib": 65240060}]})
+net = {n["iface"]: n for n in doc.get("net", [])}
+check("net: real interfaces only", sorted(net), ["eth0", "tailscale0", "wlan0"])
+check("net: Wi-Fi has no speed", net.get("wlan0"), {
+    "iface": "wlan0", "wireless": True, "virtual": False, "state": "up", "mbps": None, "mac": "c8:95:ce:31:cc:2f"})
+check("net: wired link speed", (net.get("eth0") or {}).get("mbps"), 1000)
+check("net: a VPN is virtual", (net.get("tailscale0") or {}).get("virtual"), True)
+check("disks: through LUKS and partitions to the drive", doc.get("disks"), [
+    {"mount": "/", "fs": "btrfs", "device": "nvme0n1", "model": "SAMSUNG MZVLC1T0HFLU-00BLL", "size_b": 1024209543168},
+    {"mount": "/boot", "fs": "vfat", "device": "nvme0n1", "model": "SAMSUNG MZVLC1T0HFLU-00BLL", "size_b": 1024209543168},
+    {"mount": "/data", "fs": "ext4", "device": None, "model": None, "size_b": None}])
+
+sys.exit(1 if failures else 0)
+PYEOF
+python3 "$PY_ASSERT_INFO" "$OUT_INFO" || fail "--info assertions failed (see FAIL lines above)"
+
+empty_info="$(MONITOR_INFO_ROOT="$EMPTY_ROOT" "$SYSREAD" --info)" || fail "sysread --info failed on an empty machine"
+python3 - "$empty_info" <<'PYEOF' || fail "--info on an empty machine: expected nulls and empty lists"
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["system"] == dict.fromkeys(["vendor", "product", "version", "board_vendor", "board", "kernel", "boot_time"]), doc["system"]
+assert all(v is None for v in doc["cpu"].values()), doc["cpu"]
+assert doc["gpus"] == [] and doc["net"] == [] and doc["disks"] == [], doc
+assert doc["mem"] == {"total_kib": None, "swaps": []}, doc["mem"]
+PYEOF
+pass "--info reports nulls and empty lists when nothing answers"
+
 echo "ALL COLLECTOR TESTS PASSED"

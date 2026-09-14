@@ -8,6 +8,8 @@
 # reading forks nothing but `stat` for disk space and one `nvidia-smi` call
 # on NVIDIA. MONITOR_READ names what to read; anything it leaves out reads
 # as null (or []), so a switched-off piece costs nothing.
+# `sysread --info` prints the facts that never change (model names,
+# sizes, drivers) once, as one JSON object for the menu.
 set -u
 
 HWMON_ROOT="${MONITOR_HWMON_ROOT:-/sys/class/hwmon}"
@@ -27,6 +29,8 @@ NET_IFACE_WANTED="${MONITOR_NET_IFACE:-auto}"
 # wakes a sleeping NVIDIA card.
 READ_LIST=",${MONITOR_READ:-all},"
 RESCAN_EVERY=30
+# A fake filesystem root for every path `--info` reads (tests).
+INFO_ROOT="${MONITOR_INFO_ROOT:-}"
 
 # ---------------------------------------------------------------------------
 # Persistent state (priming / once-only detection / sensor caches)
@@ -129,6 +133,28 @@ quote_to() {
   __q=${__q//$'\b'/\\b}
   __q=${__q//$'\f'/\\f}
   printf -v "$1" '"%s"' "$__q"
+}
+
+# cpu_model_clean_to <var> <model name>: the name without trademark marks,
+# base clock and filler words, so "Intel(R) Core(TM) i7-8550U CPU @
+# 1.80GHz" reads "Intel Core i7-8550U" and "AMD Ryzen 7 5800X 8-Core
+# Processor" reads "AMD Ryzen 7 5800X".
+cpu_model_clean_to() {
+  local __raw="${2:-}" __word __out=""
+  local -a __words=()
+  __raw="${__raw%%@*}"
+  __raw="${__raw//(R)/}"
+  __raw="${__raw//(r)/}"
+  __raw="${__raw//(TM)/}"
+  __raw="${__raw//(tm)/}"
+  read -r -a __words <<< "$__raw"
+  for __word in "${__words[@]}"; do
+    case "$__word" in
+      CPU|Processor|*-Core|*-core) continue ;;
+    esac
+    __out+="${__out:+ }$__word"
+  done
+  printf -v "$1" '%s' "$__out"
 }
 
 # read_to <var> <file>: <var> = the file's first line, trimmed; fails when
@@ -298,7 +324,7 @@ provider_cpu_info_once() {
       processor[[:space:]]*:*) cores=$((cores + 1)) ;;
       "model name"*:*)
         if [[ -z "$model" ]]; then
-          trim_to model "${line#*:}"
+          cpu_model_clean_to model "${line#*:}"
         fi
         ;;
     esac
@@ -865,12 +891,16 @@ provider_disk_io() {
   VAL_DISK_WRITE=$((d_write * 1000000 / d_time))
 }
 
-# disk_mounts: the real filesystems the disk read-out can follow, one
-# mount point per device, so btrfs subvolumes don't list one disk thrice.
-disk_mounts() {
+# real_mounts_scan <mounts file>: the real filesystems, one mount point
+# per device, so btrfs subvolumes don't list one disk thrice. Fills
+# MOUNT_DEVS, MOUNT_POINTS and MOUNT_TYPES in file order.
+real_mounts_scan() {
+  MOUNT_DEVS=()
+  MOUNT_POINTS=()
+  MOUNT_TYPES=()
   local -a lines=()
-  local list="" seen=" " line dev mp quoted
-  lines_to lines "$MOUNTS_FILE" || true
+  local seen=" " line dev mp
+  lines_to lines "$1" || return 0
   for line in "${lines[@]}"; do
     # device, mount point, type; /proc/mounts escapes a space as \040.
     [[ "$line" =~ ^([^ ]+)\ ([^ ]+)\ ([^ ]+)\  ]] || continue
@@ -882,6 +912,17 @@ disk_mounts() {
     [[ "$seen" == *" $dev "* ]] && continue
     seen+="$dev "
     printf -v mp '%b' "${BASH_REMATCH[2]}"
+    MOUNT_DEVS+=("$dev")
+    MOUNT_POINTS+=("$mp")
+    MOUNT_TYPES+=("${BASH_REMATCH[3]}")
+  done
+}
+
+# disk_mounts: the mount points the disk read-out can follow.
+disk_mounts() {
+  local list="" mp quoted
+  real_mounts_scan "$MOUNTS_FILE"
+  for mp in "${MOUNT_POINTS[@]}"; do
     quote_to quoted "$mp"
     list+="${list:+,}$quoted"
   done
@@ -917,6 +958,344 @@ assemble_gpu_detail() {
   if [[ "$used" != "null" || "$total" != "null" || "$watts" != "null" ]]; then
     GPU_DETAIL_JSON="{\"vram_used_b\":$used,\"vram_total_b\":$total,\"watts\":$watts}"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# --info: the facts that cannot change while the machine runs (model
+# names, sizes, drivers), printed once as one JSON object for the menu.
+# Raw facts only: the widget decides how to name them. Every path goes
+# through INFO_ROOT, so the tests can hand in a fake machine.
+# ---------------------------------------------------------------------------
+
+# fact_to <var> <path>: the first line of $INFO_ROOT<path>, trimmed, or
+# "" when it cannot be read.
+fact_to() {
+  read_to "$1" "$INFO_ROOT$2" || printf -v "$1" '%s' ""
+}
+
+# str_json_to <var> <string>: a JSON string, or null for "".
+str_json_to() {
+  if [[ -n "${2:-}" ]]; then
+    quote_to "$1" "$2"
+  else
+    printf -v "$1" '%s' "null"
+  fi
+}
+
+# uint_json_to <var> <string>: the integer, or null.
+uint_json_to() {
+  if is_uint "${2:-}"; then
+    printf -v "$1" '%s' "$((10#$2))"
+  else
+    printf -v "$1" '%s' "null"
+  fi
+}
+
+# link_path_to <var> <symlink to a directory>: the physical path behind
+# it, resolved by the shell's own cd (no readlink fork), or "".
+link_path_to() {
+  local __link_here="$PWD" __link_path=""
+  if cd -P -- "$2" 2>/dev/null; then
+    __link_path="$PWD"
+    cd -- "$__link_here" 2>/dev/null || true
+  fi
+  printf -v "$1" '%s' "$__link_path"
+}
+
+info_system() {
+  local vendor product version board_vendor board kernel boot="" line
+  local -a lines=()
+  fact_to vendor /sys/class/dmi/id/sys_vendor
+  fact_to product /sys/class/dmi/id/product_name
+  fact_to version /sys/class/dmi/id/product_version
+  fact_to board_vendor /sys/class/dmi/id/board_vendor
+  fact_to board /sys/class/dmi/id/board_name
+  fact_to kernel /proc/sys/kernel/osrelease
+  if lines_to lines "$INFO_ROOT/proc/stat"; then
+    for line in "${lines[@]}"; do
+      if [[ "$line" == "btime "* ]]; then
+        boot="${line#btime }"
+        break
+      fi
+    done
+  fi
+  local j_vendor j_product j_version j_board_vendor j_board j_kernel j_boot
+  str_json_to j_vendor "$vendor"
+  str_json_to j_product "$product"
+  str_json_to j_version "$version"
+  str_json_to j_board_vendor "$board_vendor"
+  str_json_to j_board "$board"
+  str_json_to j_kernel "$kernel"
+  uint_json_to j_boot "$boot"
+  INFO_SYSTEM_JSON="{\"vendor\":$j_vendor,\"product\":$j_product,\"version\":$j_version,\"board_vendor\":$j_board_vendor,\"board\":$j_board,\"kernel\":$j_kernel,\"boot_time\":$j_boot}"
+}
+
+info_cpu() {
+  local -a lines=()
+  local line model="" threads=0 cores=0 phys="" core="" seen=" "
+  lines_to lines "$INFO_ROOT/proc/cpuinfo" || true
+  for line in "${lines[@]}"; do
+    case "$line" in
+      processor[[:space:]]*:*) threads=$((threads + 1)); phys="" ;;
+      "model name"*:*) [[ -n "$model" ]] || cpu_model_clean_to model "${line#*:}" ;;
+      "physical id"*:*) trim_to phys "${line#*:}" ;;
+      "core id"*:*)
+        # One core per (package, core) pair: SMT siblings share it.
+        trim_to core "${line#*:}"
+        if [[ "$seen" != *" $phys:$core "* ]]; then
+          seen+="$phys:$core "
+          cores=$((cores + 1))
+        fi
+        ;;
+    esac
+  done
+  # Hybrid CPUs clock their cores differently: the fastest one counts.
+  local f khz max=0
+  for f in "$INFO_ROOT"/sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq; do
+    read_to khz "$f" || continue
+    if is_uint "$khz" && [[ "$khz" -gt "$max" ]]; then
+      max="$khz"
+    fi
+  done
+  # The last-level cache: the highest index level cpu0 reports.
+  local d level size cache="" best=0
+  for d in "$INFO_ROOT"/sys/devices/system/cpu/cpu0/cache/index[0-9]*; do
+    read_to level "$d/level" || continue
+    read_to size "$d/size" || continue
+    is_uint "$level" || continue
+    case "$size" in
+      *K) size="${size%K}" ;;
+      *M) size="${size%M}"; is_uint "$size" && size=$((size * 1024)) ;;
+    esac
+    if is_uint "$size" && [[ "$level" -gt "$best" ]]; then
+      best="$level"
+      cache="$size"
+    fi
+  done
+  local governor driver
+  fact_to governor /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+  fact_to driver /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver
+  # A count of zero means the file said nothing: null, not 0.
+  [[ "$cores" -gt 0 ]] || cores=""
+  [[ "$threads" -gt 0 ]] || threads=""
+  [[ "$best" -gt 0 ]] || best=""
+  local mhz=""
+  [[ "$max" -gt 0 ]] && mhz=$((max / 1000))
+  local j_model j_cores j_threads j_mhz j_cache j_level j_governor j_driver
+  str_json_to j_model "$model"
+  uint_json_to j_cores "$cores"
+  uint_json_to j_threads "$threads"
+  uint_json_to j_mhz "$mhz"
+  uint_json_to j_cache "$cache"
+  uint_json_to j_level "$best"
+  str_json_to j_governor "$governor"
+  str_json_to j_driver "$driver"
+  INFO_CPU_JSON="{\"model\":$j_model,\"cores\":$j_cores,\"threads\":$j_threads,\"max_mhz\":$j_mhz,\"cache_kib\":$j_cache,\"cache_level\":$j_level,\"governor\":$j_governor,\"driver\":$j_driver}"
+}
+
+# pci_names_scan: GPU_NAMES[i] for every GPU_PCI[i] ("vendor:device"),
+# in one pass over pci.ids. A vendor line starts in column 0; its
+# devices follow, indented by one tab ("\t7d51  Arrow Lake-P [...]").
+pci_names_scan() {
+  local file="" f line vendor="" id i left=${#GPU_PCI[@]}
+  for f in "$INFO_ROOT/usr/share/hwdata/pci.ids" "$INFO_ROOT/usr/share/misc/pci.ids"; do
+    if [[ -r "$f" ]]; then
+      file="$f"
+      break
+    fi
+  done
+  [[ -n "$file" && "$left" -gt 0 ]] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      ''|'#'*|$'\t\t'*) continue ;;
+      $'\t'*)
+        [[ -n "$vendor" ]] || continue
+        id="$vendor:${line:1:4}"
+        for i in "${!GPU_PCI[@]}"; do
+          if [[ "${GPU_PCI[i]}" == "$id" && -z "${GPU_NAMES[i]}" ]]; then
+            trim_to "GPU_NAMES[$i]" "${line:5}"
+            left=$((left - 1))
+          fi
+        done
+        [[ "$left" -gt 0 ]] || break
+        ;;
+      *)
+        vendor=""
+        for i in "${!GPU_PCI[@]}"; do
+          if [[ "${GPU_PCI[i]}" == "${line:0:4}:"* ]]; then
+            vendor="${line:0:4}"
+          fi
+        done
+        ;;
+    esac
+  done < "$file"
+}
+
+info_gpus() {
+  GPU_PCI=()
+  GPU_NAMES=()
+  local -a sources=() drivers=()
+  local card vendor device path
+  for card in "$INFO_ROOT"/sys/class/drm/card[0-9]*; do
+    # card0, not its connectors (card0-eDP-1); boot framebuffers have no
+    # PCI ids and drop out here too.
+    [[ "${card##*/}" =~ ^card[0-9]+$ ]] || continue
+    read_to vendor "$card/device/vendor" || continue
+    read_to device "$card/device/device" || continue
+    vendor="${vendor#0x}"
+    device="${device#0x}"
+    GPU_PCI+=("${vendor,,}:${device,,}")
+    GPU_NAMES+=("")
+    case "${vendor,,}" in
+      10de) sources+=("nvidia") ;;
+      1002) sources+=("amd") ;;
+      8086) sources+=("intel") ;;
+      *) sources+=("") ;;
+    esac
+    link_path_to path "$card/device/driver"
+    drivers+=("${path##*/}")
+  done
+  pci_names_scan
+  local list="" i j_source j_name j_driver j_pci
+  for i in "${!GPU_PCI[@]}"; do
+    str_json_to j_source "${sources[i]}"
+    str_json_to j_name "${GPU_NAMES[i]}"
+    str_json_to j_driver "${drivers[i]}"
+    quote_to j_pci "${GPU_PCI[i]}"
+    list+="${list:+,}{\"source\":$j_source,\"name\":$j_name,\"driver\":$j_driver,\"pci\":$j_pci}"
+  done
+  INFO_GPUS_JSON="[$list]"
+}
+
+info_mem() {
+  local -a lines=()
+  local line total="" list="" kind j_total
+  if lines_to lines "$INFO_ROOT/proc/meminfo"; then
+    for line in "${lines[@]}"; do
+      if [[ "$line" =~ ^MemTotal:[[:space:]]+([0-9]+) ]]; then
+        total="${BASH_REMATCH[1]}"
+        break
+      fi
+    done
+  fi
+  # /proc/swaps: a header, then name, type, size in KiB.
+  if lines_to lines "$INFO_ROOT/proc/swaps"; then
+    for line in "${lines[@]}"; do
+      [[ "$line" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([0-9]+) ]] || continue
+      case "${BASH_REMATCH[1]}" in
+        /dev/zram*) kind="zram" ;;
+        *) kind="${BASH_REMATCH[2]}" ;;
+      esac
+      quote_to kind "$kind"
+      list+="${list:+,}{\"kind\":$kind,\"size_kib\":${BASH_REMATCH[3]}}"
+    done
+  fi
+  uint_json_to j_total "$total"
+  INFO_MEM_JSON="{\"total_kib\":$j_total,\"swaps\":[$list]}"
+}
+
+info_net() {
+  local d name state mac speed wireless virtual list="" j_name j_state j_mac j_speed
+  for d in "$INFO_ROOT"/sys/class/net/*; do
+    name="${d##*/}"
+    [[ -d "$d" ]] && is_real_iface "$name" || continue
+    fact_to state "/sys/class/net/$name/operstate"
+    fact_to mac "/sys/class/net/$name/address"
+    [[ "$mac" != "00:00:00:00:00:00" ]] || mac=""
+    # A down link and Wi-Fi report no speed (the read fails or says -1).
+    fact_to speed "/sys/class/net/$name/speed"
+    if ! is_uint "$speed" || [[ "$speed" -eq 0 ]]; then
+      speed=""
+    fi
+    wireless=false
+    if [[ -d "$d/wireless" || -e "$d/phy80211" ]]; then
+      wireless=true
+    fi
+    # A VPN or a bridge has no device behind it.
+    virtual=true
+    if [[ -e "$d/device" ]]; then
+      virtual=false
+    fi
+    quote_to j_name "$name"
+    str_json_to j_state "$state"
+    str_json_to j_mac "$mac"
+    uint_json_to j_speed "$speed"
+    list+="${list:+,}{\"iface\":$j_name,\"wireless\":$wireless,\"virtual\":$virtual,\"state\":$j_state,\"mbps\":$j_speed,\"mac\":$j_mac}"
+  done
+  INFO_NET_JSON="[$list]"
+}
+
+# block_disk_to <var> <device path>: the whole disk behind a mounted
+# device. /dev/mapper/<name> goes down device-mapper to its first slave
+# (LUKS, LVM, both stacked), and a partition up to its disk. "" when
+# the chain breaks.
+block_disk_to() {
+  local __sys="$INFO_ROOT/sys/class/block" __name="${2##*/}" __d __n __path __hops=0
+  if [[ "$2" == /dev/mapper/* ]]; then
+    __name=""
+    for __d in "$__sys"/dm-*; do
+      if read_to __n "$__d/dm/name" && [[ "$__n" == "${2##*/}" ]]; then
+        __name="${__d##*/}"
+        break
+      fi
+    done
+  fi
+  while [[ "$__name" == dm-* && "$__hops" -lt 8 ]]; do
+    __hops=$((__hops + 1))
+    __n=""
+    for __d in "$__sys/$__name/slaves"/*; do
+      if [[ -e "$__d" ]]; then
+        __n="${__d##*/}"
+        break
+      fi
+    done
+    __name="$__n"
+  done
+  if [[ -n "$__name" && -e "$__sys/$__name/partition" ]]; then
+    link_path_to __path "$__sys/$__name"
+    __path="${__path%/*}"
+    __name="${__path##*/}"
+  fi
+  if [[ -z "$__name" || ! -e "$__sys/$__name/size" ]]; then
+    __name=""
+  fi
+  printf -v "$1" '%s' "$__name"
+}
+
+info_disks() {
+  local i disk model sectors bytes list="" j_mount j_fs j_disk j_model j_size
+  real_mounts_scan "$INFO_ROOT/proc/mounts"
+  for i in "${!MOUNT_POINTS[@]}"; do
+    block_disk_to disk "${MOUNT_DEVS[i]}"
+    model=""
+    bytes=""
+    if [[ -n "$disk" ]]; then
+      fact_to model "/sys/class/block/$disk/device/model"
+      [[ -n "$model" ]] || fact_to model "/sys/class/block/$disk/device/name"
+      fact_to sectors "/sys/class/block/$disk/size"
+      # The kernel counts a block device in 512-byte sectors.
+      is_uint "$sectors" && bytes=$((sectors * 512))
+    fi
+    quote_to j_mount "${MOUNT_POINTS[i]}"
+    quote_to j_fs "${MOUNT_TYPES[i]}"
+    str_json_to j_disk "$disk"
+    str_json_to j_model "$model"
+    uint_json_to j_size "$bytes"
+    list+="${list:+,}{\"mount\":$j_mount,\"fs\":$j_fs,\"device\":$j_disk,\"model\":$j_model,\"size_b\":$j_size}"
+  done
+  INFO_DISKS_JSON="[$list]"
+}
+
+emit_info() {
+  info_system
+  info_cpu
+  info_gpus
+  info_mem
+  info_net
+  info_disks
+  printf '{"info":1,"system":%s,"cpu":%s,"gpus":%s,"mem":%s,"net":%s,"disks":%s}\n' \
+    "$INFO_SYSTEM_JSON" "$INFO_CPU_JSON" "$INFO_GPUS_JSON" "$INFO_MEM_JSON" \
+    "$INFO_NET_JSON" "$INFO_DISKS_JSON"
 }
 
 # ---------------------------------------------------------------------------
@@ -976,7 +1355,7 @@ pause() {
 }
 
 usage() {
-  echo "usage: sysread [--loop --interval N]" >&2
+  echo "usage: sysread [--loop --interval N | --info]" >&2
 }
 
 main() {
@@ -984,6 +1363,9 @@ main() {
   local interval=""
   if [[ "$#" -eq 0 ]]; then
     mode="once"
+  elif [[ "${1:-}" == "--info" && "$#" -eq 1 ]]; then
+    emit_info
+    return 0
   elif [[ "${1:-}" == "--loop" ]]; then
     mode="loop"
     if [[ "${2:-}" != "--interval" || -z "${3:-}" || "$#" -gt 3 ]]; then
