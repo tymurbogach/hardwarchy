@@ -8,12 +8,59 @@ bar, built piece by piece the way you want it.
 own row: add it, remove it, mute it.** Keep the two or three you actually
 watch; the rest stay one click away.
 
-![Hardwarchy in the Omarchy bar](preview.png)
+![Hardwarchy in the Omarchy bar: seven bar setups and the menu](preview.png)
 
-*The bar draws CPU (gauge, load and temp), RAM, disk space and two fans.
-Below it, the menu with the CPU card open: one row per piece, each with
-its Quiet chip, and every group with its live preview, its switch and
-its place in the bar. Net is switched off here, so it is not read.*
+## Gallery
+
+Every picture is the real Omarchy bar on one ThinkPad, in its own theme,
+set up from the menu. This machine has no readable GPU, so no GPU
+read-out appears here.
+
+### The bar, from one gauge to everything
+
+**Minimal**: a CPU gauge and the temperature, nothing else.
+
+![A CPU gauge and the temperature](docs/images/bar-minimal.png)
+
+**Simple**: icons and numbers for CPU and RAM.
+
+![CPU and RAM with icons and numbers](docs/images/bar-simple.png)
+
+**Defaults**: what a fresh install shows. The fans are dimmed because
+they are stopped.
+
+![The default read-outs: CPU, RAM and three fans](docs/images/bar-defaults.png)
+
+**Gauges**: a gauge beside each percentage.
+
+![CPU, RAM and disk, each with a gauge and digits](docs/images/bar-gauges.png)
+
+**Words**: group names instead of glyphs, RAM in GiB, the network rates.
+
+![CPU, RAM, Net and Disk spelled out as words](docs/images/bar-words.png)
+
+**Hot**: past its alert thresholds, a reading warms toward the theme's
+urgent color. The thresholds here are low on purpose.
+
+![CPU and RAM readings warmed toward the urgent color](docs/images/bar-hot.png)
+
+**Everything**: CPU with its clock and load average, RAM, network, disk
+space with reads and writes, and the fans.
+
+![Every group switched on](docs/images/bar-full.png)
+
+### The menu
+
+<p>
+  <img src="docs/images/menu-cpu.png" alt="The menu with the CPU card open" width="32%">
+  <img src="docs/images/menu-fans.png" alt="The menu with the Fans card open" width="32%">
+  <img src="docs/images/menu-net.png" alt="The menu with the Net card open" width="32%">
+</p>
+
+*Left: the CPU card, one row per piece, each with its Quiet chip.
+Middle: the Fans card, with a renamed fan and a phantom one switched
+off. Right: the Net card, which picks the link. Every header carries a
+live preview, a switch and the arrows that move the group in the bar.*
 
 ## Why
 
