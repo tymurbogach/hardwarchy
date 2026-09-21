@@ -48,13 +48,25 @@ RowLayout {
     horizontalPadding: Style.space(6)
     verticalPadding: gaugePreview ? Style.space(7) : Style.space(2)
 
-    Gauge {
+    // Keep this preview local. qs.Ui has no public Gauge component, and
+    // an unresolved visual type leaves the load chip blank on some shells.
+    Rectangle {
       anchors.centerIn: parent
-      visible: chip.gaugePreview === true
+      visible: chip.gaugePreview
       width: Style.space(7)
       height: Style.space(14)
-      ratio: 0.65
-      fillColor: chip.foreground
+      color: "transparent"
+      border.width: 1
+      border.color: chip.foreground
+      opacity: chip.selected ? 1 : 0.7
+
+      Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: Math.max(1, Math.round(parent.height * 0.65))
+        color: chip.foreground
+      }
     }
     onClicked: root.pressed(index)
   }
