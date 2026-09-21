@@ -53,7 +53,7 @@ RowLayout {
       visible: chip.gaugePreview
       width: Math.max(4, Math.round(Style.font.caption * 0.46))
       height: Math.round(Style.font.caption * 0.93)
-      ratio: 0.65
+      ratio: 0
       fillColor: root.foreground
     }
   }
