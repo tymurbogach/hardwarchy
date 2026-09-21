@@ -57,24 +57,13 @@ RowLayout {
       onClicked: root.pressed(chip.index)
     }
 
-    Rectangle {
+    Gauge {
       anchors.centerIn: chip
       visible: chip.gaugePreview
       width: Style.space(10)
       height: Style.space(20)
-      radius: Style.space(1)
-      color: "transparent"
-      border.width: Style.space(1)
-      border.color: chip.foreground
-
-      Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        height: Math.round(parent.height * 0.65)
-        radius: parent.radius
-        color: chip.foreground
-      }
+      ratio: 0.65
+      fillColor: chip.foreground
     }
   }
 
