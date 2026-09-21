@@ -32,10 +32,8 @@ RowLayout {
     required property var modelData
     required property int index
     readonly property bool usable: modelData.enabled !== false
-    readonly property bool gaugePreview: modelData.preview === "gauge"
-
-    text: gaugePreview ? "" : modelData.label
-    tooltipText: modelData.tooltip || (gaugePreview ? "Usage gauge" : "")
+    text: modelData.label
+    tooltipText: modelData.tooltip || ""
     selected: modelData.on === true
     enabled: usable
     opacity: usable ? 1 : 0.3
@@ -46,28 +44,7 @@ RowLayout {
     fontFamily: root.fontFamily
     fontSize: Style.font.caption
     horizontalPadding: Style.space(6)
-    verticalPadding: gaugePreview ? Style.space(7) : Style.space(2)
-
-    // Keep this preview local. qs.Ui has no public Gauge component, and
-    // an unresolved visual type leaves the load chip blank on some shells.
-    Rectangle {
-      anchors.centerIn: parent
-      visible: chip.gaugePreview
-      width: Style.space(7)
-      height: Style.space(14)
-      color: "transparent"
-      border.width: 1
-      border.color: chip.foreground
-      opacity: chip.selected ? 1 : 0.7
-
-      Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        height: Math.max(1, Math.round(parent.height * 0.65))
-        color: chip.foreground
-      }
-    }
+    verticalPadding: Style.space(2)
     onClicked: root.pressed(index)
   }
 
