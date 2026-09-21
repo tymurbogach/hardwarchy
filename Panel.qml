@@ -108,12 +108,12 @@ Panel {
   readonly property var sourceNames: ({ auto: "Auto", nvidia: "NVIDIA", amd: "AMD", intel: "Intel" })
   // Half-filled circle (Font Awesome "adjust"): the piece's muted color.
   readonly property string quietGlyph: ""
-  readonly property var usedChips: [root.chip("bar", "▮"), root.chip("percent", "%"), root.chip("gib", "GiB")]
+  readonly property var usedChips: [root.chip("bar", "", "", "gauge"), root.chip("percent", "%"), root.chip("gib", "GiB")]
 
   // A chip adds or removes one toggle of a part; `needs` names the toggle
   // it only makes sense with (an icon needs its value).
-  function chip(key, label, needs) {
-    return { key: key, label: label, needs: needs || "" }
+  function chip(key, label, needs, preview) {
+    return { key: key, label: label, needs: needs || "", preview: preview || "" }
   }
 
   readonly property var usedKeys: ["bar", "percent", "gib"]
@@ -168,7 +168,7 @@ Panel {
       rows.push(root.choiceRow("mount", "Mount", g.mount, r.disk ? r.disk.mounts : [], false, null))
     rows.push(root.partRow("label", "Label", [root.chip("icon", Metrics.GLYPH[id] || ""), root.chip("word", root.groupWord(id))]))
     if (id === "cpu" || id === "gpu") {
-      rows.push(root.partRow("load", "Load", [root.chip("bar", "▮"), root.chip("number", "%")]))
+      rows.push(root.partRow("load", "Load", [root.chip("bar", "", "", "gauge"), root.chip("number", "%")]))
       if (load.number === true)
         rows.push(root.partRow("zero", "Zero", [root.chip("show", "0")], true))
       rows.push(root.partRow("clock", "Clock", [root.chip("show", "G")]))

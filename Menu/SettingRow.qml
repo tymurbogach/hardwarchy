@@ -32,8 +32,11 @@ RowLayout {
     required property var modelData
     required property int index
     readonly property bool usable: modelData.enabled !== false
-    text: modelData.label
-    tooltipText: modelData.tooltip || ""
+    readonly property bool gaugePreview: modelData.preview === "gauge"
+    // The space gives Button a text baseline and enough height. Gauge is
+    // then the real icon, not a text substitute.
+    text: gaugePreview ? " " : modelData.label
+    tooltipText: modelData.tooltip || (gaugePreview ? "Usage gauge" : "")
     selected: modelData.on === true
     enabled: usable
     opacity: usable ? 1 : 0.3
@@ -45,6 +48,15 @@ RowLayout {
     fontSize: Style.font.caption
     horizontalPadding: Style.space(6)
     verticalPadding: Style.space(2)
+
+    Gauge {
+      anchors.centerIn: parent
+      visible: chip.gaugePreview
+      width: Math.max(4, Math.round(Style.font.caption * 0.46))
+      height: Math.round(Style.font.caption * 0.93)
+      ratio: 0.65
+      fillColor: chip.foreground
+    }
     onClicked: root.pressed(index)
   }
 
