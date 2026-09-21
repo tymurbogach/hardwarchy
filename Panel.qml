@@ -223,7 +223,7 @@ Panel {
       for (i = 0; i < spec.chips.length; i++) {
         var c = spec.chips[i]
         out.push({ label: c.label, on: p[c.key] === true, enabled: c.needs === "" || p[c.needs] === true,
-          act: { t: "toggle", part: spec.key, k: c.key } })
+          preview: c.preview, act: { t: "toggle", part: spec.key, k: c.key } })
       }
       out.push({ label: root.quietGlyph, on: p.quiet === true, right: true,
         tooltip: "Quiet: muted color, never warms", act: { t: "quiet", part: spec.key } })
