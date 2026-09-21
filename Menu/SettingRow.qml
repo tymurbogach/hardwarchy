@@ -7,6 +7,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import ".."
 
 RowLayout {
   id: root
@@ -30,9 +31,10 @@ RowLayout {
     required property var modelData
     required property int index
     readonly property bool usable: modelData.enabled !== false
+    readonly property bool gaugePreview: modelData.preview === "gauge"
 
-    text: modelData.label
-    tooltipText: modelData.tooltip || ""
+    text: gaugePreview ? "" : modelData.label
+    tooltipText: modelData.tooltip || (gaugePreview ? "Usage gauge" : "")
     selected: modelData.on === true
     enabled: usable
     opacity: usable ? 1 : 0.3
@@ -43,7 +45,16 @@ RowLayout {
     fontFamily: root.fontFamily
     fontSize: Style.font.caption
     horizontalPadding: Style.space(6)
-    verticalPadding: Style.space(2)
+    verticalPadding: gaugePreview ? Style.space(7) : Style.space(2)
+
+    Gauge {
+      anchors.centerIn: parent
+      visible: root.gaugePreview
+      width: Style.space(7)
+      height: Style.space(14)
+      ratio: 0.65
+      fillColor: root.foreground
+    }
     onClicked: root.pressed(index)
   }
 

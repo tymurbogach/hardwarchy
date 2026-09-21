@@ -43,10 +43,13 @@ Panel {
 
   // Readings arrive every second while the menu is open. Cards repeat over
   // preference keys, while rows and fan lines look their live data up by key.
-  // A fixed list prevents a late collector reading from adding cards and
-  // resizing the open panel. Every group remains configurable without a
-  // detected reading.
-  readonly property var groupIds: root.prefs ? root.prefs.order : []
+  // Intel graphics is integrated. Keep its controls out of the menu; a
+  // dedicated AMD or NVIDIA source makes the GPU card available.
+  readonly property var groupIds: {
+    var ids = root.prefs ? root.prefs.order.slice() : []
+    var dedicatedGpu = root.reading.gpu_source === "amd" || root.reading.gpu_source === "nvidia"
+    return ids.filter(function(id) { return id !== "gpu" || dedicatedGpu })
+  }
   readonly property var runByDevice: {
     var out = {}
     for (var i = 0; i < root.groupRuns.length; i++)
@@ -105,12 +108,12 @@ Panel {
   readonly property var sourceNames: ({ auto: "Auto", nvidia: "NVIDIA", amd: "AMD", intel: "Intel" })
   // Half-filled circle (Font Awesome "adjust"): the piece's muted color.
   readonly property string quietGlyph: ""
-  readonly property var usedChips: [root.chip("bar", "▮"), root.chip("percent", "%"), root.chip("gib", "GiB")]
+  readonly property var usedChips: [root.chip("bar", "", "", "gauge"), root.chip("percent", "%"), root.chip("gib", "GiB")]
 
   // A chip adds or removes one toggle of a part; `needs` names the toggle
   // it only makes sense with (an icon needs its value).
-  function chip(key, label, needs) {
-    return { key: key, label: label, needs: needs || "" }
+  function chip(key, label, needs, preview) {
+    return { key: key, label: label, needs: needs || "", preview: preview || "" }
   }
 
   readonly property var usedKeys: ["bar", "percent", "gib"]
@@ -165,7 +168,7 @@ Panel {
       rows.push(root.choiceRow("mount", "Mount", g.mount, r.disk ? r.disk.mounts : [], false, null))
     rows.push(root.partRow("label", "Label", [root.chip("icon", Metrics.GLYPH[id] || ""), root.chip("word", root.groupWord(id))]))
     if (id === "cpu" || id === "gpu") {
-      rows.push(root.partRow("load", "Load", [root.chip("bar", "▮"), root.chip("number", "%")]))
+      rows.push(root.partRow("load", "Load", [root.chip("bar", "", "", "gauge"), root.chip("number", "%")]))
       if (load.number === true)
         rows.push(root.partRow("zero", "Zero", [root.chip("show", "0")], true))
       rows.push(root.partRow("clock", "Clock", [root.chip("show", "G")]))
@@ -447,7 +450,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(340))
-    contentHeight: panel.cappedContentHeight(Style.space(560))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher

@@ -268,8 +268,9 @@ An open card lists, top to bottom:
 4. `Reset <group>` at the far right, for that group alone.
 
 Below the cards, collapsed **General**: Color %, Unit °C · °F, the three
-gaps, Refresh seconds, Reset all. The menu viewport is 340 × 560 theme
-pixels, bounded by the available screen space, and scrolls internally.
+gaps, Refresh seconds, Reset all. The menu is 340 theme pixels wide and
+grows with its expanded cards up to 560 theme pixels high. It then scrolls
+internally, bounded by the available screen space.
 
 Keyboard: ↑/↓ walk every line (the update button while it shows,
 headers, the rows of open cards, each fan, General). The cursor starts

@@ -5,7 +5,7 @@
   "version": "2.2.0",
   "author": "Tymur Bogach",
   "license": "MIT",
-  "description": "Any metric on any machine: CPU, GPU, memory, network, disk and every fan, one compact read-out each in the bar. Click one for a fixed, compact menu where every piece has its own setting and a live preview; right-click cycles a read-out between number, bar and both. Reads /proc and /sys directly, with no lm_sensors or vendor tools, and never reads what it does not draw.",
+  "description": "Any metric on any machine: CPU, GPU, memory, network, disk and every fan, one compact read-out each in the bar. Click one for a compact menu that follows expanded cards, where every piece has its own setting and a live preview; right-click cycles a read-out between number, bar and both. Reads /proc and /sys directly, with no lm_sensors or vendor tools, and never reads what it does not draw.",
   "kinds": ["bar-widget"],
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {

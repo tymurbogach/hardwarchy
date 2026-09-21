@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The menu has a fixed viewport and a stable set of group cards.
+- The menu grows with expanded cards up to a compact viewport limit.
 - The menu no longer shows machine, kernel or hardware fact rows.
 - Activation chips show their output glyph or format.
 - General settings start collapsed.
