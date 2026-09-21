@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased
+## 2.3.0
 
-- The menu grows with expanded cards up to the available screen space.
-- The menu no longer shows machine, kernel or hardware fact rows.
-- Activation chips show their output glyph or format.
-- General settings start collapsed.
+- Refresh the marketplace preview with the Hardwarchy visual identity.
+- Add a compact menu overview made from real CPU, RAM, Net, and Disk cards.
+- Simplify the README around installation, controls, configuration, and removal.
+- Update the marketplace description: "Modular hardware monitoring for Omarchy.
+  Minimal in the bar. Customizable in the menu."
 
 ## 2.2.0
 
