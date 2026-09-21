@@ -28,6 +28,7 @@ RowLayout {
   spacing: Style.space(6)
 
   component Chip: Button {
+    id: chip
     required property var modelData
     required property int index
     readonly property bool usable: modelData.enabled !== false
@@ -49,11 +50,11 @@ RowLayout {
 
     Gauge {
       anchors.centerIn: parent
-      visible: root.gaugePreview
+      visible: chip.gaugePreview
       width: Style.space(7)
       height: Style.space(14)
       ratio: 0.65
-      fillColor: root.foreground
+      fillColor: chip.foreground
     }
     onClicked: root.pressed(index)
   }

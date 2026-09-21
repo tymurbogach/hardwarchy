@@ -269,8 +269,8 @@ An open card lists, top to bottom:
 
 Below the cards, collapsed **General**: Color %, Unit °C · °F, the three
 gaps, Refresh seconds, Reset all. The menu is 340 theme pixels wide and
-grows with its expanded cards up to 560 theme pixels high. It then scrolls
-internally, bounded by the available screen space.
+grows with its expanded cards until it reaches the available screen space.
+It then scrolls internally.
 
 Keyboard: ↑/↓ walk every line (the update button while it shows,
 headers, the rows of open cards, each fan, General). The cursor starts

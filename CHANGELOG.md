@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The menu grows with expanded cards up to a compact viewport limit.
+- The menu grows with expanded cards up to the available screen space.
 - The menu no longer shows machine, kernel or hardware fact rows.
 - Activation chips show their output glyph or format.
 - General settings start collapsed.
