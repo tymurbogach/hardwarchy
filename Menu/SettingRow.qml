@@ -27,41 +27,32 @@ RowLayout {
 
   spacing: Style.space(6)
 
-  component Chip: Item {
+  component Chip: Button {
     id: chip
     required property var modelData
     required property int index
     readonly property bool usable: modelData.enabled !== false
     readonly property bool gaugePreview: modelData.preview === "gauge"
-    implicitWidth: gaugePreview ? Style.space(28) : button.implicitWidth
-    implicitHeight: gaugePreview ? Style.space(30) : button.implicitHeight
-    width: implicitWidth
-    height: implicitHeight
-
-    Button {
-      id: button
-      anchors.fill: parent
-      text: chip.gaugePreview ? "" : chip.modelData.label
-      tooltipText: chip.modelData.tooltip || (chip.gaugePreview ? "Usage gauge" : "")
-      selected: chip.modelData.on === true
-      enabled: chip.usable
-      opacity: chip.usable ? 1 : 0.3
-      hasCursor: chip.index === root.cursorButton
-      bordered: true
-      foreground: root.foreground
-      accent: root.accent
-      fontFamily: root.fontFamily
-      fontSize: Style.font.caption
-      horizontalPadding: chip.gaugePreview ? 0 : Style.space(6)
-      verticalPadding: chip.gaugePreview ? 0 : Style.space(2)
-      onClicked: root.pressed(chip.index)
-    }
+    text: gaugePreview ? " " : modelData.label
+    tooltipText: modelData.tooltip || (gaugePreview ? "Usage gauge" : "")
+    selected: modelData.on === true
+    enabled: usable
+    opacity: usable ? 1 : 0.3
+    hasCursor: index === root.cursorButton
+    bordered: true
+    foreground: root.foreground
+    accent: root.accent
+    fontFamily: root.fontFamily
+    fontSize: Style.font.caption
+    horizontalPadding: Style.space(6)
+    verticalPadding: Style.space(2)
+    onClicked: root.pressed(index)
 
     Hardwarchy.Gauge {
       anchors.centerIn: chip
       visible: chip.gaugePreview
-      width: Style.space(10)
-      height: Style.space(20)
+      width: Math.max(4, Math.round(Style.font.caption * 0.46))
+      height: Math.round(Style.font.caption * 0.93)
       ratio: 0.65
       fillColor: root.foreground
     }
