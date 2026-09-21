@@ -33,9 +33,7 @@ RowLayout {
     required property int index
     readonly property bool usable: modelData.enabled !== false
     readonly property bool gaugePreview: modelData.preview === "gauge"
-    // The space gives Button a text baseline and enough height. Gauge is
-    // then the real icon, not a text substitute.
-    text: gaugePreview ? " " : modelData.label
+    text: gaugePreview ? "" : modelData.label
     tooltipText: modelData.tooltip || (gaugePreview ? "Usage gauge" : "")
     selected: modelData.on === true
     enabled: usable
@@ -46,16 +44,31 @@ RowLayout {
     accent: root.accent
     fontFamily: root.fontFamily
     fontSize: Style.font.caption
-    horizontalPadding: Style.space(6)
-    verticalPadding: Style.space(2)
+    horizontalPadding: gaugePreview ? 0 : Style.space(6)
+    verticalPadding: gaugePreview ? 0 : Style.space(2)
+    // Button sizes itself from text. A gauge has no text, so reserve its
+    // complete target explicitly instead of allowing it to collapse.
+    width: gaugePreview ? Style.space(28) : implicitWidth
+    height: gaugePreview ? Style.space(30) : implicitHeight
 
-    Gauge {
+    Rectangle {
       anchors.centerIn: parent
       visible: chip.gaugePreview
-      width: Math.max(4, Math.round(Style.font.caption * 0.46))
-      height: Math.round(Style.font.caption * 0.93)
-      ratio: 0.65
-      fillColor: chip.foreground
+      width: Style.space(10)
+      height: Style.space(20)
+      radius: Style.space(1)
+      color: "transparent"
+      border.width: Style.space(1)
+      border.color: chip.foreground
+
+      Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: Math.round(parent.height * 0.65)
+        radius: parent.radius
+        color: chip.foreground
+      }
     }
     onClicked: root.pressed(index)
   }
