@@ -54,6 +54,15 @@ Item {
   function triggerPress(button) {
     if (root.bar) root.bar.hideTooltip(root)
     root.pressed(button)
+    // A click can replace this delegate or change its text without a new
+    // pointer-enter event. Refresh after bindings settle while the pointer
+    // stays over the cell.
+    Qt.callLater(function() { root.refreshTooltip() })
+  }
+
+  function refreshTooltip() {
+    if (root.bar && mouseArea.containsMouse)
+      root.bar.showTooltip(root, root.tooltipText)
   }
 
   function pieceColor(piece) {
@@ -208,9 +217,10 @@ Item {
     hoverEnabled: true
     cursorShape: root.pressable ? Qt.PointingHandCursor : Qt.ArrowCursor
 
-    onEntered: if (root.bar) root.bar.showTooltip(root, root.tooltipText)
+    onEntered: root.refreshTooltip()
     onExited: if (root.bar) root.bar.hideTooltip(root)
     onClicked: function(mouse) { if (root.pressable) root.triggerPress(mouse.button) }
+    Component.onCompleted: root.refreshTooltip()
 
     // Swallowed, not handled: in the bar's centre section an unaccepted
     // double-click falls through to the transparency toggle. Accepting
@@ -229,6 +239,7 @@ Item {
   }
 
   onBarChanged: syncClickRegistration()
+  onTooltipTextChanged: root.refreshTooltip()
   onVisibleChanged: if (!visible && root.bar) root.bar.hideTooltip(root)
   Component.onCompleted: syncClickRegistration()
   Component.onDestruction: {

@@ -5,10 +5,8 @@
 // source (GPU, link, mount), then one row per piece of the cell in bar
 // order: chips that add or remove what the piece draws, and the piece's
 // own Quiet chip at the far right. Then the group's alerts and its Reset.
-// A General section closes the menu. The title carries the version and,
-// when GitHub has a newer release, the update button; under it two lines
-// name the machine and its kernel, and every open card starts with facts
-// about the hardware it reads.
+// A collapsed General section closes the menu. The title carries the
+// version and, when GitHub has a newer release, the update button.
 // Rows are data (rowsFor/buttonsOf); the widget owns all state; this file
 // draws it and forwards gestures, from the mouse and the keyboard alike.
 import QtQuick
@@ -17,7 +15,6 @@ import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model/Metrics.js" as Metrics
-import "Model/Info.js" as Info
 import "Menu"
 
 Panel {
@@ -36,33 +33,20 @@ Panel {
   readonly property var reading: hostWidget ? hostWidget.reading : ({})
   readonly property var groupRuns:
     hostWidget ? Metrics.metricsGroupRuns(hostWidget.orderedMetrics) : []
-  readonly property var info: hostWidget ? hostWidget.info : null
   readonly property string version: hostWidget ? hostWidget.version : ""
   readonly property string latestVersion: hostWidget ? hostWidget.latestVersion : ""
   readonly property bool updateAvailable: hostWidget ? hostWidget.updateAvailable : false
-
-  // The uptime in the system line ticks while the menu is open.
-  property real nowSeconds: Date.now() / 1000
-  readonly property var systemLines: Info.infoSystemLines(root.info, root.nowSeconds)
-
-  Timer {
-    interval: 30000
-    running: root.opened
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: root.nowSeconds = Date.now() / 1000
-  }
 
   function runUpdate() {
     if (root.hostWidget) root.hostWidget.runUpdate()
   }
 
-  // Readings arrive every second while the menu is open, and each one
-  // builds a fresh `groupRuns` array. A Repeater fed that array would
-  // rebuild every card each second, dropping hover and half-done clicks,
-  // so cards, rows and fan lines all repeat over stable keys instead and
-  // look their live data up by key.
-  property var groupIds: []
+  // Readings arrive every second while the menu is open. Cards repeat over
+  // preference keys, while rows and fan lines look their live data up by key.
+  // A fixed list prevents a late collector reading from adding cards and
+  // resizing the open panel. Every group remains configurable without a
+  // detected reading.
+  readonly property var groupIds: root.prefs ? root.prefs.order : []
   readonly property var runByDevice: {
     var out = {}
     for (var i = 0; i < root.groupRuns.length; i++)
@@ -87,11 +71,6 @@ Panel {
     for (var i = 0; i < list.length; i++)
       if (list[i][field] === value) return list[i]
     return null
-  }
-
-  onGroupRunsChanged: {
-    var ids = root.idsOf(root.groupRuns, "device")
-    if (!root.sameList(ids, root.groupIds)) root.groupIds = ids
   }
 
   function groupOf(id) {
@@ -126,7 +105,7 @@ Panel {
   readonly property var sourceNames: ({ auto: "Auto", nvidia: "NVIDIA", amd: "AMD", intel: "Intel" })
   // Half-filled circle (Font Awesome "adjust"): the piece's muted color.
   readonly property string quietGlyph: ""
-  readonly property var usedChips: [root.chip("bar", "Bar"), root.chip("percent", "%"), root.chip("gib", "GiB")]
+  readonly property var usedChips: [root.chip("bar", "▮"), root.chip("percent", "%"), root.chip("gib", "GiB")]
 
   // A chip adds or removes one toggle of a part; `needs` names the toggle
   // it only makes sense with (an icon needs its value).
@@ -162,8 +141,12 @@ Panel {
     return { type: "choice", key: key, title: title, options: options }
   }
 
-  function markedRow(key, title, markKey, markLabel) {
-    return root.partRow(key, title, [root.chip(markKey, markLabel, "value"), root.chip("value", "Value")])
+  function markedRow(key, title, markKey, markLabel, valueLabel) {
+    return root.partRow(key, title, [root.chip(markKey, markLabel, "value"), root.chip("value", valueLabel)])
+  }
+
+  function groupWord(id) {
+    return id === "fan" ? "Name" : (Metrics.GROUP_LABELS[id] || id)
   }
 
   // Every row of one group's card, top to bottom: source, pieces in bar
@@ -180,19 +163,19 @@ Panel {
       rows.push(root.choiceRow("iface", "Link", g.iface, r.net ? r.net.ifaces : [], true, root.sourceNames))
     if (id === "disk")
       rows.push(root.choiceRow("mount", "Mount", g.mount, r.disk ? r.disk.mounts : [], false, null))
-    rows.push(root.partRow("label", "Label", [root.chip("icon", "Icon"), root.chip("word", "Word")]))
+    rows.push(root.partRow("label", "Label", [root.chip("icon", Metrics.GLYPH[id] || ""), root.chip("word", root.groupWord(id))]))
     if (id === "cpu" || id === "gpu") {
-      rows.push(root.partRow("load", "Load", [root.chip("bar", "Bar"), root.chip("number", "Number")]))
+      rows.push(root.partRow("load", "Load", [root.chip("bar", "▮"), root.chip("number", "%")]))
       if (load.number === true)
-        rows.push(root.partRow("zero", "Zero", [root.chip("show", "Show")], true))
-      rows.push(root.partRow("clock", "Clock", [root.chip("show", "Show")]))
-      rows.push(root.partRow("temp", "Temp", [root.chip("icon", "Icon", "value"), root.chip("value", "Value"),
+        rows.push(root.partRow("zero", "Zero", [root.chip("show", "0")], true))
+      rows.push(root.partRow("clock", "Clock", [root.chip("show", "G")]))
+      rows.push(root.partRow("temp", "Temp", [root.chip("icon", Metrics.GLYPH.temp, "value"), root.chip("value", "°"),
         root.chip("unit", root.prefs && root.prefs.unit === "F" ? "°F" : "°C", "value")]))
       if (id === "cpu") {
         rows.push(root.partRow("avg", "Avg", [root.chip("one", "1m"), root.chip("five", "5m"), root.chip("fifteen", "15m")]))
       } else {
         rows.push(root.partRow("vram", "VRAM", root.usedChips))
-        rows.push(root.partRow("power", "Power", [root.chip("show", "Show")]))
+        rows.push(root.partRow("power", "Power", [root.chip("show", "W")]))
       }
     } else if (id === "mem" || id === "disk") {
       rows.push(root.partRow("used", "Used", root.usedChips))
@@ -201,15 +184,15 @@ Panel {
       if (id === "mem") {
         rows.push(root.partRow("swap", "Swap", root.usedChips))
       } else {
-        rows.push(root.markedRow("read", "Read", "tag", "Tag"))
-        rows.push(root.markedRow("write", "Write", "tag", "Tag"))
+        rows.push(root.markedRow("read", "Read", "tag", "R", "B/s"))
+        rows.push(root.markedRow("write", "Write", "tag", "W", "B/s"))
       }
     } else if (id === "net") {
-      rows.push(root.markedRow("down", "Down", "icon", "Icon"))
-      rows.push(root.markedRow("up", "Up", "icon", "Icon"))
+      rows.push(root.markedRow("down", "Down", "icon", Metrics.GLYPH.down, "B/s"))
+      rows.push(root.markedRow("up", "Up", "icon", Metrics.GLYPH.up, "B/s"))
     } else if (id === "fan") {
-      rows.push(root.partRow("rpm", "RPM", [root.chip("value", "Value"), root.chip("unit", "Unit", "value")]))
-      rows.push({ type: "flag", key: "showStopped", title: "Stopped", label: "Show" })
+      rows.push(root.partRow("rpm", "RPM", [root.chip("value", "####"), root.chip("unit", "RPM", "value")]))
+      rows.push({ type: "flag", key: "showStopped", title: "Stopped", label: "0 RPM" })
     }
     // The usage alert covers every percentage that warms on it: the load,
     // the space used, VRAM and swap.
@@ -338,6 +321,7 @@ Panel {
       { key: "reset", type: "setting", title: "", buttons: [{ label: "Reset all", act: { t: "resetAll" } }] }
     ]
   }
+  property bool generalExpanded: false
 
   function generalActs(spec) {
     if (spec.type === "stepper") return spec.acts
@@ -380,9 +364,12 @@ Panel {
         }
       }
     }
-    for (var k = 0; k < root.generalSpecs.length; k++) {
-      var gs = root.generalSpecs[k]
-      out.push({ key: "general:" + gs.key, kind: "general", spec: gs, count: root.generalActs(gs).length })
+    out.push({ key: "general", kind: "generalHeader", count: 1 })
+    if (root.generalExpanded) {
+      for (var k = 0; k < root.generalSpecs.length; k++) {
+        var gs = root.generalSpecs[k]
+        out.push({ key: "general:" + gs.key, kind: "general", spec: gs, count: root.generalActs(gs).length })
+      }
     }
     return out
   }
@@ -430,6 +417,7 @@ Panel {
     else if (item.kind === "header") root.pressHeader(item.device, root.cursorButton)
     else if (item.kind === "row") root.pressRow(item.device, item.spec, root.cursorButton)
     else if (item.kind === "fan") root.pressFan(item.fan, root.cursorButton)
+    else if (item.kind === "generalHeader") root.generalExpanded = !root.generalExpanded
     else if (item.kind === "general") root.runGeneral(root.generalActs(item.spec)[root.cursorButton])
   }
 
@@ -459,7 +447,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(340))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight)
+    contentHeight: panel.cappedContentHeight(Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -534,39 +522,6 @@ Panel {
                 root.runUpdate()
               }
             }
-          }
-
-          // The machine, then kernel and uptime.
-          Column {
-            width: parent.width
-            visible: root.systemLines.length > 0
-            bottomPadding: Style.space(2)
-
-            Repeater {
-              model: root.systemLines
-
-              delegate: Text {
-                required property string modelData
-                width: parent.width
-                text: modelData
-                elide: Text.ElideRight
-                color: root.fg
-                opacity: 0.55
-                font.family: root.ff
-                font.pixelSize: Style.font.caption
-              }
-            }
-          }
-
-          Text {
-            width: parent.width
-            visible: root.groupIds.length === 0
-            text: "No readings yet."
-            wrapMode: Text.WordWrap
-            color: root.fg
-            opacity: 0.7
-            font.family: root.ff
-            font.pixelSize: Style.font.body
           }
 
           Repeater {
@@ -672,45 +627,13 @@ Panel {
                     if (!root.sameList(keys, rows.rowKeys)) rows.rowKeys = keys
                   }
                   onSpecsChanged: rows.syncRows()
-                  // Facts about the hardware the card reads, above its rows.
-                  readonly property var infoSpecs: Info.infoRows(card.device, root.info, root.reading)
-                  property var infoKeys: []
-                  function syncInfo() {
-                    var keys = root.idsOf(rows.infoSpecs, "key")
-                    if (!root.sameList(keys, rows.infoKeys)) rows.infoKeys = keys
-                  }
-                  onInfoSpecsChanged: rows.syncInfo()
-                  Component.onCompleted: {
-                    rows.syncRows()
-                    rows.syncInfo()
-                  }
+                  Component.onCompleted: rows.syncRows()
 
                   width: card.width
                   leftPadding: Style.space(6)
                   rightPadding: Style.space(6)
                   bottomPadding: Style.space(6)
                   spacing: Style.space(3)
-
-                  Repeater {
-                    model: rows.infoKeys
-
-                    delegate: InfoRow {
-                      required property string modelData
-                      readonly property var fact: root.findBy(rows.infoSpecs, "key", modelData) || ({ title: "", value: "" })
-                      width: rows.rowWidth
-                      title: fact.title
-                      value: fact.value
-                      foreground: root.fg
-                      fontFamily: root.ff
-                    }
-                  }
-
-                  // A hairline between the facts and the settings.
-                  PanelSeparator {
-                    visible: rows.infoKeys.length > 0
-                    width: rows.rowWidth
-                    foreground: root.fg
-                  }
 
                   Repeater {
                     model: rows.rowKeys
@@ -817,13 +740,19 @@ Panel {
           }
 
           PanelSectionHeader {
-            text: "GENERAL"
+            text: root.generalExpanded ? "▾  GENERAL" : "▸  GENERAL"
             foreground: root.fg
             fontFamily: root.ff
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.generalExpanded = !root.generalExpanded
+            }
           }
 
           Repeater {
-            model: root.generalKeys
+            model: root.generalExpanded ? root.generalKeys : []
 
             delegate: Loader {
               id: general

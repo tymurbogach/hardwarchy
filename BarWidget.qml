@@ -6,7 +6,7 @@ import qs.Ui
 import "Model/Metrics.js" as Metrics
 import "Model/Prefs.js" as Prefs
 import "Model/Tooltip.js" as Tips
-import "Model/Info.js" as Info
+import "Model/Version.js" as Version
 import "Styles/Modes.js" as Modes
 
 BarWidget {
@@ -191,22 +191,16 @@ BarWidget {
     root.patchGroup("fan", { order: keys })
   }
 
-  // Reorder groups by swapping with the neighbour the menu shows, so a
-  // group without readings (no GPU, say) never swallows a move.
+  // Reorder groups by swapping preference neighbours. The menu exposes
+  // every group before it receives a reading.
   function moveGroup(id, delta) {
-    var runs = Metrics.metricsGroupRuns(root.orderedMetrics)
-    var at = -1
-    for (var i = 0; i < runs.length; i++)
-      if (runs[i].device === id) at = i
-    var to = at + delta
-    if (at < 0 || to < 0 || to >= runs.length) return
-    var other = runs[to].device
     var order = root.prefs.order.slice()
-    var a = order.indexOf(id)
-    var b = order.indexOf(other)
-    if (a < 0 || b < 0) return
-    order[a] = other
-    order[b] = id
+    var at = order.indexOf(id)
+    var to = at + delta
+    if (at < 0 || to < 0 || to >= order.length) return
+    var other = order[to]
+    order[to] = id
+    order[at] = other
     var p = Prefs.adoptPrefs(root.prefs)
     p.order = order
     root.commit(p)
@@ -343,16 +337,13 @@ BarWidget {
   // interval and the read list).
   onCollectorKeyChanged: Qt.callLater(root.restartCollector)
 
-  // ---- menu facts and updates -----------------------------------------
-  // Facts that never change (`sysread --info`), read once, the first time
-  // the menu opens: a menu nobody opens costs nothing.
-  property var info: null
+  // ---- updates ---------------------------------------------------------
   // The installed version, from the manifest, so the number lives in one
   // place.
   property string version: ""
   // The version on the remote's HEAD, once `scripts/update check` found one.
   property string latestVersion: ""
-  readonly property bool updateAvailable: Info.infoNewerVersion(root.latestVersion, root.version)
+  readonly property bool updateAvailable: Version.isNewer(root.latestVersion, root.version)
   // When the last check started (ms since the epoch), and whether it
   // failed: a failed check (offline) retries sooner than a clean one.
   property real updateCheckedAt: 0
@@ -362,7 +353,6 @@ BarWidget {
 
   onOpenedChanged: {
     if (!root.opened) return
-    if (!root.info && !infoReader.running) infoReader.running = true
     root.checkForUpdate()
   }
 
@@ -394,15 +384,6 @@ BarWidget {
       } catch (e) {
         root.version = ""
       }
-    }
-  }
-
-  Process {
-    id: infoReader
-    command: [root.readerPath, "--info"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.info = Info.infoParse(text)
     }
   }
 

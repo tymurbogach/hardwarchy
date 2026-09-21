@@ -26,14 +26,11 @@ Single executable bash script, `set -u`, no arguments beyond:
 - `sysread` — one JSON line on stdout (CPU % measured over ~0.2 s).
 - `sysread --loop --interval N` — one JSON line every N seconds, the
   first after ~0.2 s.
-- `sysread --info` — one JSON line of facts that never change (§2.2).
 
 Environment:
 
 - `MONITOR_HWMON_ROOT`, `MONITOR_DRM_ROOT`, `MONITOR_NET_DEV_FILE`,
   `MONITOR_DISKSTATS_PATH`, `MONITOR_MOUNTS_FILE` — fake sources (tests).
-- `MONITOR_INFO_ROOT` — a fake filesystem root for every path `--info`
-  reads (tests).
 - `MONITOR_GPU` (`auto` | `nvidia` | `amd` | `intel`),
   `MONITOR_NET_IFACE` (`auto` | a name), `MONITOR_ROOT_MOUNT` (a path) —
   the sources the widget chose in its menu. A GPU source or an interface
@@ -110,11 +107,11 @@ All values numbers or `null`. Missing sensor ⇒ `null`, never a fake zero.
   drops trademark marks, the base clock and filler words: `Intel(R)
   Core(TM) i7-8550U CPU @ 1.80GHz` reads `Intel Core i7-8550U`.
 
-### 2.2 Info JSON (`--info`)
+### 2.2 Diagnostic JSON (`--info`)
 
-Raw facts, read once per shell lifetime, the first time the menu opens.
-The widget names them (§6). A fact that does not answer is `null`; a
-list with nothing in it is `[]`.
+`--info` remains a diagnostic command for static machine facts. The
+widget does not call it. A fact that does not answer is `null`; a list
+with nothing in it is `[]`.
 
 ```
 {
@@ -244,12 +241,10 @@ what I/O counts. A detail never repeats a headline. Nulls are skipped.
 ## 6. Menu
 
 The title reads `Hardwarchy` and the installed version from
-`manifest.json`. Two muted lines follow: the machine (maker and model
-from DMI; Lenovo's model sits in `product_version`, a self-built desktop
-falls back to its board), then `Linux 7.2.3 · up 12 h 23 min`. The
-uptime ticks every 30 s while the menu is open.
+`manifest.json`.
 
-One card per group, in bar order. The header shows a caret (▸ closed,
+One card per group, in preference order. Cards exist before readings
+arrive, so the panel geometry stays stable. The header shows a caret (▸ closed,
 ▾ open), glyph, name, a live preview of the group's cell (drawn by the
 bar's own component, dimmed while the group is off, "nothing shown"
 when every part is off), an on/off switch, and ↑ ↓ that move the group
@@ -259,33 +254,22 @@ with a gap below it.
 
 An open card lists, top to bottom:
 
-0. Facts about the hardware it reads, as title and value, then a
-   hairline. They follow the source the reading uses:
-   - CPU: Model, Cores (`16 cores · 16 threads`), Speed (`up to 5.4
-     GHz`), Cache (`24 MiB L3`), Governor (`powersave · intel_pstate`).
-   - GPU: Model (the bracketed `pci.ids` name with its vendor, `Intel
-     Arc Pro 130T/140T`), Driver. Two GPUs and no source: no rows.
-   - RAM: Size, Swaps (`zram 62.2 GiB · file 8.0 GiB`).
-   - Net: Type (`Wi-Fi · up`, `Ethernet · up · 1 Gb/s`, `Virtual`), MAC.
-   - Disk: Drive, Size (`954 GiB · nvme0n1`), Format.
-   - Fans: none; the fan lines are the facts.
-   Sizes use GiB (one decimal under 100) and TiB. A fact that did not
-   answer is left out. The keyboard cursor skips these rows.
-1. The source, one choice: GPU `Source` (Auto and the answering
+0. The source, one choice: GPU `Source` (Auto and the answering
    sources), Net `Link` (Auto and the interfaces), Disk `Mount` (the
    mounts). A choice that is gone right now stays listed.
-2. One row per part, in bar order: chips on the left that add or remove
+1. One row per part, in bar order: chips on the left that add or remove
    each toggle, and the part's Quiet chip (a half-filled circle) at the
    far right. A chip that needs another (an icon needs its value) is
    disabled without it. The `Zero` sub row shows only with digits.
-3. Fans: `Stopped` (show stopped fans or not), then one line per fan:
+2. Fans: `Stopped` (show stopped fans or not), then one line per fan:
    on/off switch, name (renamed in place; empty resets), value, move
    up/down.
-4. Alerts: warn/crit steppers for the readings that warm and show.
-5. `Reset <group>` at the far right, for that group alone.
+3. Alerts: warn/crit steppers for the readings that warm and show.
+4. `Reset <group>` at the far right, for that group alone.
 
-Below the cards, **General**: Color %, Unit °C · °F, the three gaps,
-Refresh seconds, Reset all.
+Below the cards, collapsed **General**: Color %, Unit °C · °F, the three
+gaps, Refresh seconds, Reset all. The menu viewport is 340 × 560 theme
+pixels, bounded by the available screen space, and scrolls internally.
 
 Keyboard: ↑/↓ walk every line (the update button while it shows,
 headers, the rows of open cards, each fan, General). The cursor starts
@@ -381,7 +365,7 @@ File `~/.config/omarchy/hardwarchy.json`, versioned:
   Shows strip + menu stand-ins.
 - `tests/model-tests.js` (node): pure-logic tests for parse, metrics,
   visibility, the read list, cells, tooltip, prefs migrate/validate,
-  and the menu facts and version compare (`Model/Info.js`).
+  and version compare (`Model/Version.js`).
 - `tests/collector-tests.sh` (bash): fake hwmon, drm, net, diskstats and
   mounts trees; asserts schema fields incl. null-fallbacks and the
   widget's source choices with their fallbacks; `--info` against a fake

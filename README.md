@@ -57,12 +57,10 @@ space with reads and writes, and the fans.
   <img src="docs/images/menu-net.png" alt="The menu with the Net card open" width="32%">
 </p>
 
-*Left: the CPU card opens with the processor's facts, then one row per
-piece, each with its Quiet chip. Middle: the Fans card, with a renamed
-fan and a phantom one switched off. Right: the Net card names the link
-and picks it. The title carries the version and the machine; every
-header carries a live preview, a switch and the arrows that move the
-group in the bar.*
+*Left: the CPU card opens with one row per piece and its Quiet chip.
+Middle: the Fans card, with a renamed fan and a phantom one switched off.
+Right: the Net card selects the link. The title carries the version; every
+header carries a live preview, a switch and arrows that move the group.*
 
 ## Why
 
@@ -73,11 +71,11 @@ actually worth a glance.
 
 So the read-out is a set of independent pieces rather than one string.
 Every group is its own click target and opens the menu, which is the
-switchboard: each card names its group outright — CPU, GPU, RAM, Net,
-Disk, Fans — with a live preview of what it puts on the bar. Nothing is
-hard-coded to one machine: a fanless laptop shows three read-outs, a
-desktop with four fans shows seven, and either way you choose which
-reach the bar, in which order, and what each one draws.
+switchboard: it always exposes CPU, GPU, RAM, Net, Disk and Fans, with a
+live preview of what each group puts on the bar. Nothing is hard-coded to
+one machine: a fanless laptop shows three read-outs, a desktop with four
+fans shows seven, and either way you choose which reach the bar, in which
+order, and what each one draws.
 
 ## What it shows
 
@@ -90,14 +88,8 @@ reach the bar, in which order, and what each one draws.
 | Disk | space used on the mount you pick, read and write rates |
 | Fans | every readable fan, by name |
 
-Network and Disk start switched off. A machine that exposes nothing
-readable for a group simply lists no card for it instead of zeros.
-
-The menu also names the hardware behind each card: the CPU model, cores
-and threads, peak clock, cache and governor; the GPU model and driver;
-RAM and swap sizes; the link type, speed and MAC; the drive, its size
-and filesystem. Two lines under the title name the machine, the kernel
-and the uptime.
+Network and Disk start switched off. The menu keeps every group available,
+even when a machine has no reading for it yet.
 
 Temperature prefers the real CPU package sensor — `Tctl`/`Tdie` on AMD,
 `Package id 0` on Intel — and falls back to the hottest readable sensor.
@@ -129,26 +121,25 @@ apart — and you can rename either.
 ### Build each read-out your way
 
 Each group draws one read-out (each fan its own), left to right. An open
-card starts with the facts about its hardware, then lists one row per
-piece, in the same order. The chips on the left
+card lists one row per piece, in the same order. The chips on the left
 **add or remove** — light several and you get all of them — and every
 row ends with its own **Quiet** chip, a half-filled circle at the far
 right: the piece takes the muted color and never warms. For CPU:
 
 | Row | Chips | Draws |
 |---|---|---|
-| Label | Icon · Word | the chip glyph, `CPU`, both, or nothing |
-| Load | Bar · Number | a vertical gauge, `12%`, or both |
-| ↳ Zero | Show | the leading zero under 10% (`05%` or `5%`) |
-| Clock | Show | `3.2G` |
-| Temp | Icon · Value · °C | thermometer, `58`, unit letter |
+| Label |  · CPU | the chip glyph, `CPU`, both, or nothing |
+| Load | ▮ · % | a vertical gauge, `12%`, or both |
+| ↳ Zero | 0 | the leading zero under 10% (`05%` or `5%`) |
+| Clock | G | `3.2G` |
+| Temp |  · ° · °C | thermometer, `58`, unit letter |
 | Avg | 1m · 5m · 15m | the load average windows you pick |
 
-GPU has the same rows plus **Source**, **VRAM** (Bar · % · GiB) and
-**Power**. RAM has **Used** (Bar · % · GiB), **Zero** and **Swap**. Net
-has **Link**, then **Down** and **Up** (Icon · Value, the icon an arrow).
-Disk has **Mount**, **Used**, **Zero**, **Read** and **Write** (Tag ·
-Value, the tag R or W). Fans have **RPM** (Value · Unit), **Stopped**
+GPU has the same rows plus **Source**, **VRAM** (▮ · % · GiB) and
+**Power** (W). RAM has **Used** (▮ · % · GiB), **Zero** and **Swap**. Net
+has **Link**, then **Down** and **Up** (↓/↑ and the rate). Disk has
+**Mount**, **Used**, **Zero**, **Read** and **Write** (R/W and the rate).
+Fans have **RPM** (#### · RPM), **Stopped** (`0 RPM`)
 (hide the ones at 0 RPM) and one line per fan: switch, name (click the
 pencil to rename; empty resets), value, move up or down.
 
@@ -159,9 +150,9 @@ urgent color between warn and crit; the label warms with the hottest
 reading it names. A card that is on but draws nothing says *nothing
 shown*.
 
-The **General** section holds Color % (how strongly warming applies,
-0 to 100), the temperature unit, the three gaps (inside a piece, between
-pieces, between read-outs), the refresh interval and Reset all.
+The collapsed **General** section holds Color % (how strongly warming
+applies, 0 to 100), the temperature unit, the three gaps (inside a piece,
+between pieces, between read-outs), the refresh interval and Reset all.
 
 A vertical bar always draws numbers. The exact figures behind any gauge
 live in the tooltip and the menu.
@@ -236,10 +227,7 @@ rm -f ~/.config/omarchy/modular-hw-monitor.json ~/.config/omarchy/any-monitor.js
 
 Readings come from `/proc/stat`, `/proc/meminfo`, `/proc/cpuinfo`,
 `/proc/loadavg`, `/proc/net/dev`, `/proc/diskstats`, `/proc/mounts` and
-`/sys/class/hwmon`, all readable without privileges. The menu's facts
-add `/sys/class/dmi`, `/sys/class/drm`, `/sys/class/net`,
-`/sys/class/block`, `/proc/swaps` and the `pci.ids` list from hwdata,
-read once, the first time the menu opens.
+`/sys/class/hwmon`, all readable without privileges.
 
 Hardwarchy reaches the network for one thing only: the update check,
 a `git fetch` from the repository it was installed from. It runs when
@@ -311,13 +299,11 @@ The collector runs on its own:
 ```bash
 ./scripts/sysread                      # one reading
 ./scripts/sysread --loop --interval 2  # stream one reading every 2 seconds
-./scripts/sysread --info               # the facts the menu shows, once
 MONITOR_NET_IFACE=wlan0 MONITOR_ROOT_MOUNT=/home ./scripts/sysread   # other sources
 ./scripts/update check                 # the version on the remote's HEAD
 ```
 
-Set `MONITOR_HWMON_ROOT` to a directory of fake `hwmon` nodes, or
-`MONITOR_INFO_ROOT` to a fake filesystem root for `--info`, to test
+Set `MONITOR_HWMON_ROOT` to a directory of fake `hwmon` nodes to test
 machines you do not have. Tests:
 
 ```bash

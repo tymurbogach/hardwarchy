@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The menu has a fixed viewport and a stable set of group cards.
+- The menu no longer shows machine, kernel or hardware fact rows.
+- Activation chips show their output glyph or format.
+- General settings start collapsed.
+
 ## 2.2.0
 
 - The menu title shows the installed version, and an **Update to …**

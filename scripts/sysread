@@ -8,8 +8,7 @@
 # reading forks nothing but `stat` for disk space and one `nvidia-smi` call
 # on NVIDIA. MONITOR_READ names what to read; anything it leaves out reads
 # as null (or []), so a switched-off piece costs nothing.
-# `sysread --info` prints the facts that never change (model names,
-# sizes, drivers) once, as one JSON object for the menu.
+# `sysread --info` prints static machine facts as one diagnostic JSON object.
 set -u
 
 HWMON_ROOT="${MONITOR_HWMON_ROOT:-/sys/class/hwmon}"
@@ -962,7 +961,7 @@ assemble_gpu_detail() {
 
 # ---------------------------------------------------------------------------
 # --info: the facts that cannot change while the machine runs (model
-# names, sizes, drivers), printed once as one JSON object for the menu.
+# names, sizes, drivers), printed once as one diagnostic JSON object.
 # Raw facts only: the widget decides how to name them. Every path goes
 # through INFO_ROOT, so the tests can hand in a fake machine.
 # ---------------------------------------------------------------------------

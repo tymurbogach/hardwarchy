@@ -50,7 +50,7 @@ var files = [
   "Styles/Modes.js",
   "Model/Tooltip.js",
   "Model/Prefs.js",
-  "Model/Info.js"
+  "Model/Version.js"
 ];
 
 var sandbox = {};
@@ -684,86 +684,15 @@ function prefsWith(id, fields) {
   deepEq(adoptPrefs(serialize(modes)), modes, "round trip of an upgraded mode draft");
 })();
 
-// ---------- menu info ----------
+// ---------- versions ----------
 (function () {
-  var infoParse = S("infoParse");
-  var infoMachine = S("infoMachine");
-  var infoGpuName = S("infoGpuName");
-  var infoUptime = S("infoUptime");
-  var infoSystemLines = S("infoSystemLines");
-  var infoRows = S("infoRows");
-  var infoNewerVersion = S("infoNewerVersion");
-
-  eq(infoParse("garbage"), null, "infoParse: garbage is null");
-  eq(infoParse('{"schema":2}'), null, "infoParse: a reading is not info");
-  eq(infoParse('{"info":1,"cpu":{}}').info, 1, "infoParse: an info line");
-
-  eq(infoMachine({ vendor: "LENOVO", product: "21QTCTO1WW", version: "ThinkPad P14s Gen 6" }),
-    "Lenovo ThinkPad P14s Gen 6", "machine: Lenovo names the model in the version field");
-  eq(infoMachine({ vendor: "Dell Inc.", product: "XPS 13 9310", version: "1.0" }), "Dell XPS 13 9310", "machine: maker and product");
-  eq(infoMachine({ vendor: "Framework", product: "Laptop 13 (AMD Ryzen 7040Series)" }),
-    "Framework Laptop 13 (AMD Ryzen 7040Series)", "machine: a maker already in the product is not repeated");
-  eq(infoMachine({ vendor: "To be filled by O.E.M.", product: "System Product Name",
-    board_vendor: "ASUSTeK COMPUTER INC.", board: "ROG STRIX B550-F GAMING" }),
-    "ASUS ROG STRIX B550-F GAMING", "machine: a self-built desktop falls back to its board");
-  eq(infoMachine({}), null, "machine: nothing reported is null");
-
-  eq(infoGpuName({ source: "intel", name: "Arrow Lake-P [Arc Pro 130T/140T]" }), "Intel Arc Pro 130T/140T", "gpu name: the bracketed marketing name");
-  eq(infoGpuName({ source: "amd", name: "Phoenix1" }), "AMD Phoenix1", "gpu name: a codename alone");
-  eq(infoGpuName({ source: "nvidia", name: null, pci: "10de:28e0" }), "NVIDIA device 10de:28e0", "gpu name: no pci.ids entry");
-  eq(infoGpuName({ source: null, name: "Some GPU", pci: "1234:5678" }), "Some GPU", "gpu name: an unknown vendor");
-
-  eq(infoUptime(59), "up 0 min", "uptime: under a minute");
-  eq(infoUptime(12 * 3600 + 23 * 60 + 5), "up 12 h 23 min", "uptime: hours and minutes");
-  eq(infoUptime(3 * 86400 + 4 * 3600 + 59 * 60), "up 3 d 4 h", "uptime: days and hours");
-
-  var info = {
-    info: 1,
-    system: { vendor: "LENOVO", product: "21QTCTO1WW", version: "ThinkPad P14s Gen 6", kernel: "7.2.3-arch1-3", boot_time: 1000 },
-    cpu: { model: "Intel Core Ultra 9 285H", cores: 16, threads: 16, max_mhz: 5400, cache_kib: 24576, cache_level: 3,
-      governor: "powersave", driver: "intel_pstate" },
-    gpus: [{ source: "intel", name: "Arrow Lake-P [Arc Pro 130T/140T]", driver: "xe", pci: "8086:7d51" },
-      { source: "nvidia", name: "AD107M [GeForce RTX 4060 Max-Q / Mobile]", driver: "nvidia", pci: "10de:28e0" }],
-    mem: { total_kib: 65240496, swaps: [{ kind: "zram", size_kib: 65240060 }, { kind: "file", size_kib: 8388608 }] },
-    net: [{ iface: "wlan0", wireless: true, virtual: false, state: "up", mbps: null, mac: "c8:95:ce:31:cc:2f" },
-      { iface: "eth0", wireless: false, virtual: false, state: "up", mbps: 1000, mac: "a8:2b:dd:66:32:ac" },
-      { iface: "tailscale0", wireless: false, virtual: true, state: "unknown", mbps: null, mac: null }],
-    disks: [{ mount: "/", fs: "btrfs", device: "nvme0n1", model: "SAMSUNG MZVLC1T0HFLU-00BLL", size_b: 1024209543168 },
-      { mount: "/data", fs: "ext4", device: null, model: null, size_b: null }]
-  };
-
-  deepEq(infoSystemLines(info, 1000 + 12 * 3600 + 23 * 60), ["Lenovo ThinkPad P14s Gen 6", "Linux 7.2.3 · up 12 h 23 min"],
-    "system lines: the machine, then kernel and uptime");
-  deepEq(infoSystemLines({ system: { kernel: "6.1" } }, null), ["Linux 6.1"], "system lines: missing facts drop out");
-  deepEq(infoSystemLines(null, 5), [], "system lines: no info yet");
-
-  function rowsText(rows) {
-    return rows.map(function (r) { return r.title + "=" + r.value; });
-  }
-  deepEq(rowsText(infoRows("cpu", info, {})), ["Model=Intel Core Ultra 9 285H", "Cores=16 cores · 16 threads",
-    "Speed=up to 5.4 GHz", "Cache=24 MiB L3", "Governor=powersave · intel_pstate"], "cpu rows");
-  eq(infoRows("cpu", info, {})[0].key, "info:model", "rows carry stable keys");
-  deepEq(rowsText(infoRows("gpu", info, { gpu_source: "nvidia" })), ["Model=NVIDIA GeForce RTX 4060 Max-Q / Mobile", "Driver=nvidia"],
-    "gpu rows follow the source the reading uses");
-  deepEq(rowsText(infoRows("gpu", { gpus: [info.gpus[0]] }, {})), ["Model=Intel Arc Pro 130T/140T", "Driver=xe"],
-    "a lone GPU needs no source");
-  deepEq(infoRows("gpu", info, {}), [], "two GPUs and no source: no guess");
-  deepEq(rowsText(infoRows("mem", info, {})), ["Size=62.2 GiB", "Swaps=zram 62.2 GiB · file 8.0 GiB"], "mem rows");
-  deepEq(rowsText(infoRows("net", info, { net: { iface: "wlan0" } })), ["Type=Wi-Fi · up", "MAC=c8:95:ce:31:cc:2f"], "net rows, Wi-Fi");
-  deepEq(rowsText(infoRows("net", info, { net: { iface: "eth0" } })), ["Type=Ethernet · up · 1 Gb/s", "MAC=a8:2b:dd:66:32:ac"], "net rows, wired");
-  deepEq(rowsText(infoRows("net", info, { net: { iface: "tailscale0" } })), ["Type=Virtual"], "net rows, a VPN");
-  deepEq(rowsText(infoRows("disk", info, { disk: { mount: "/" } })), ["Drive=SAMSUNG MZVLC1T0HFLU-00BLL",
-    "Size=954 GiB · nvme0n1", "Format=btrfs"], "disk rows follow the mount");
-  deepEq(rowsText(infoRows("disk", info, { disk: { mount: "/data" } })), ["Format=ext4"], "disk rows: unknown drive");
-  deepEq(infoRows("fan", info, {}), [], "fans have no info rows");
-  deepEq(infoRows("cpu", null, null), [], "no info yet: no rows");
-
-  eq(infoNewerVersion("2.2.0", "2.1.0"), true, "version: minor bump");
-  eq(infoNewerVersion("2.10.0", "2.9.1"), true, "version: compares numbers, not text");
-  eq(infoNewerVersion("2.1", "2.1.0"), false, "version: 2.1 equals 2.1.0");
-  eq(infoNewerVersion("2.0.9", "2.1.0"), false, "version: an older remote");
-  eq(infoNewerVersion("", "2.1.0"), false, "version: nothing fetched");
-  eq(infoNewerVersion("3.0.0-beta", "2.1.0"), false, "version: a tag that is not a plain version");
+  var isNewer = S("isNewer");
+  eq(isNewer("2.2.0", "2.1.0"), true, "version: minor bump");
+  eq(isNewer("2.10.0", "2.9.1"), true, "version: compares numbers, not text");
+  eq(isNewer("2.1", "2.1.0"), false, "version: 2.1 equals 2.1.0");
+  eq(isNewer("2.0.9", "2.1.0"), false, "version: an older remote");
+  eq(isNewer("", "2.1.0"), false, "version: nothing fetched");
+  eq(isNewer("3.0.0-beta", "2.1.0"), false, "version: a tag that is not a plain version");
 })();
 
 console.log("PASS " + passed + " assertions, FAIL " + failed);
