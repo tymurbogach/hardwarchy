@@ -7,7 +7,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
-import ".."
+import ".." as Hardwarchy
 
 RowLayout {
   id: root
@@ -57,13 +57,13 @@ RowLayout {
       onClicked: root.pressed(chip.index)
     }
 
-    Gauge {
+    Hardwarchy.Gauge {
       anchors.centerIn: chip
       visible: chip.gaugePreview
       width: Style.space(10)
       height: Style.space(20)
       ratio: 0.65
-      fillColor: chip.foreground
+      fillColor: root.foreground
     }
   }
 
