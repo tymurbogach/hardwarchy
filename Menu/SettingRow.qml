@@ -50,7 +50,7 @@ RowLayout {
 
     Gauge {
       anchors.centerIn: parent
-      visible: chip.gaugePreview
+      visible: chip.gaugePreview === true
       width: Style.space(7)
       height: Style.space(14)
       ratio: 0.65
