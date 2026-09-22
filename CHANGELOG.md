@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.3.2
+
+- Harden the update check: a hung check no longer blocks retries, and the
+  update launcher escapes quotes in its path.
+- Skip the prefs write when nothing changed, so two bar instances stop
+  echoing the file back and forth.
+- Fan hide and order lists keep `fan:` keys only, deduplicated; unknown
+  ids stay, so a docked-away fan finds its state when it comes back.
+- A fan list with no readable RPM keeps the last good reading instead of
+  blanking the bar; a stopped fan still counts as a reading.
+- Missing swap and disk values stay `null` and silent instead of reading
+  as zero.
+- Disk I/O counts `xvd` and `dasd` whole disks; `md` and device-mapper
+  stay out so RAID members never count twice.
+- Fix the spec: the default bar section is `left`, and document the
+  accepted limits (mount fallback, model riding with load, one-time GPU
+  probe).
+
 ## 2.3.1
 
 - Replace the marketplace images with the current compact menu.
