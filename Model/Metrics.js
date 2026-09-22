@@ -379,8 +379,18 @@ function hasReading(r) {
   if (r.disk !== null && r.disk !== undefined) {
     return true;
   }
-  if (metricsIsArray(r.fans) && r.fans.length > 0) {
-    return true;
+  // A fan entry only counts when it carries a reading: `metrics()`
+  // skips fans with a null rpm, so an all-null fan list must keep the
+  // last good reading instead of replacing it with nothing drawable.
+  // A stopped fan (0 RPM) is a legitimate reading and counts.
+  if (metricsIsArray(r.fans)) {
+    var fi = 0;
+    for (fi = 0; fi < r.fans.length; fi++) {
+      var f = r.fans[fi];
+      if (f && metricsNum(f.rpm) !== null) {
+        return true;
+      }
+    }
   }
   return false;
 }

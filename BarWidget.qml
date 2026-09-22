@@ -121,7 +121,13 @@ BarWidget {
   }
 
   function savePrefs() {
-    prefsFile.setText(Prefs.serialize(root.prefs) + "\n")
+    // Two bar instances (two monitors) watch the same file: skip the
+    // write when nothing changed, so a reload never echoes back.
+    var next = Prefs.serialize(root.prefs) + "\n"
+    try {
+      if (prefsFile.text() === next) return
+    } catch (e) {}
+    prefsFile.setText(next)
   }
 
   // Every per-group change goes through one patch, so each click writes
@@ -360,7 +366,15 @@ BarWidget {
   // menu opens: the check reaches GitHub, so it never runs unseen.
   function checkForUpdate() {
     var wait = (root.updateCheckFailed ? 15 * 60 : 6 * 3600) * 1000
-    if (updateChecker.running) return
+    // The check script bounds its own network work (10 s timeout), but a
+    // hung check must never block retries forever: past 30 s it is killed
+    // and a fresh check starts at once, still only on menu open.
+    if (updateChecker.running) {
+      if (Date.now() - root.updateCheckedAt <= 30000) return
+      updateChecker.running = false
+      root.updateCheckFailed = true
+      root.updateCheckedAt = 0
+    }
     if (root.updateCheckedAt > 0 && Date.now() - root.updateCheckedAt < wait) return
     root.updateCheckedAt = Date.now()
     updateChecker.running = true
@@ -368,10 +382,15 @@ BarWidget {
 
   // A floating terminal shows the changes and asks before it updates;
   // the shell restarts afterwards, and with it this widget.
+  // The launcher joins its arguments with spaces and runs them through
+  // `bash -c`, so the command travels as one quoted shell word. Single
+  // quotes in the path are escaped; the plugin path cannot contain them
+  // in practice, but a home directory could.
   function runUpdate() {
     root.close()
+    var safePath = root.updaterPath.replace(/'/g, "'\\''")
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
-      "'" + root.updaterPath + "' apply"])
+      "'" + safePath + "' apply"])
   }
 
   FileView {

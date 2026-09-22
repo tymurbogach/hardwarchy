@@ -399,9 +399,8 @@ provider_memory() {
       local s_used=$((swap_total - swap_free))
       if [[ "$s_used" -lt 0 ]]; then s_used=0; fi
       VAL_SWAP_USED="$s_used"
-    else
-      VAL_SWAP_USED="$swap_total"
     fi
+    # Without SwapFree there is no truthful used value: it stays null.
   fi
 }
 
@@ -809,12 +808,14 @@ assemble_net() {
 # ---------------------------------------------------------------------------
 
 # is_whole_disk <device name>: real block devices only, no partitions,
-# loop devices or device-mapper nodes, so I/O isn't double-counted.
+# loop devices, device-mapper or md nodes, so RAID members and virtual
+# stacks never double-count I/O.
 is_whole_disk() {
   case "$1" in
     sd[a-z]|sd[a-z][a-z]) return 0 ;;
-    vd[a-z]) return 0 ;;
+    vd[a-z]|xvd[a-z]|xvd[a-z][a-z]) return 0 ;;
     hd[a-z]) return 0 ;;
+    dasd[a-z]|dasd[a-z][a-z]) return 0 ;;
     nvme[0-9]*n[0-9]*)
       case "$1" in *p[0-9]*) return 1 ;; esac
       return 0 ;;

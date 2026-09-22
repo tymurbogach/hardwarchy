@@ -152,8 +152,10 @@ function tooltipMemDetails(first, reading, shown) {
   var lines = [];
   var su = tooltipNum(r.swap_used_kib);
   var st = tooltipNum(r.swap_total_kib);
-  if (!shown.swap && st !== null && st > 0) {
-    lines.push("Swap " + tooltipGib(su !== null && su > 0 ? su / 1048576 : 0) + "/" + tooltipGib(st / 1048576) + " GiB");
+  // Nulls are skipped: without a used value there is nothing truthful
+  // to print, so a missing swap stays silent instead of reading 0.0.
+  if (!shown.swap && st !== null && st > 0 && su !== null && su >= 0) {
+    lines.push("Swap " + tooltipGib(su / 1048576) + "/" + tooltipGib(st / 1048576) + " GiB");
   }
   return lines;
 }

@@ -161,6 +161,8 @@ var serialize = S("serialize");
   ok(hasReading(EMPTY) === false, "hasReading false for EMPTY");
   ok(hasReading(parse("garbage")) === false, "hasReading false for garbage parse");
   ok(hasReading(null) === false, "hasReading false for null");
+  ok(hasReading({ fans: [{ id: "a/fan1", chip: "a", label: "fan1", rpm: null }] }) === false, "hasReading false for all-null fans");
+  ok(hasReading({ fans: [{ id: "a/fan1", chip: "a", label: "fan1", rpm: 0 }] }) === true, "hasReading true for a stopped fan");
 })();
 
 // ---------- fanLabels ----------
@@ -536,6 +538,27 @@ function prefsWith(id, fields) {
   ok(tooltipFor(usedOnly, r).indexOf("every physical disk") < 0, "a disk tooltip without read or write says nothing about I/O");
   ok(diskTip.indexOf("Disk read: 40 KB/s") >= 0 && diskTip.indexOf("Disk write: 12 KB/s") >= 0, "read and write apart");
   eq(tooltipFor(placeholderCell(), r), "No metrics visible", "the placeholder explains itself");
+})();
+
+(function testNullSwapTooltip() {
+  var r = sampleReading();
+  r.swap_used_kib = null;
+  var all = metricsFn(r, {});
+  var d = adoptPrefs({});
+  var cell = groupCells(all.filter(function (m) { return m.device === "mem"; }), d, "mem", false)[0];
+  ok(tooltipFor(cell, r).indexOf("Swap") < 0, "a missing swap stays silent instead of reading 0.0");
+})();
+
+(function testFanKeyLists() {
+  var p = adoptPrefs({ groups: { fan: {
+    hidden: ["fan:a/fan1", "cpu_temp", "fan:a/fan1", "", 42],
+    order: ["fan:a/fan2", "junk", "fan:a/fan2"]
+  } } });
+  deepEq(p.groups.fan.hidden, ["fan:a/fan1"], "fan hidden keeps fan: keys only, deduplicated");
+  deepEq(p.groups.fan.order, ["fan:a/fan2"], "fan order keeps fan: keys only, deduplicated");
+  var kept = adoptPrefs({ groups: { fan: { hidden: ["fan:ghost/fan9"], order: ["fan:ghost/fan9"] } } });
+  deepEq(kept.groups.fan.hidden, ["fan:ghost/fan9"], "unknown fan ids stay for a docked-away fan");
+  deepEq(kept.groups.fan.order, ["fan:ghost/fan9"], "unknown fan order stays for a docked-away fan");
 })();
 
 // ---------- prefs (v2) ----------

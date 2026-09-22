@@ -13,7 +13,7 @@ that group's settings. A popout menu lists every group with a live
 preview, a switch and one row per piece, plus a few general settings.
 
 - Plugin id: `io.github.tymurbogach.hardwarchy`
-- Entry point: `BarWidget.qml`, kind `bar-widget`, default section `right`.
+- Entry point: `BarWidget.qml`, kind `bar-widget`, default section `left`.
 - Language: English everywhere (code, UI, docs, commits).
 - Dependencies at runtime: `bash` only. No lm_sensors, no vendor tools.
   The update check (§6.1) alone runs `git` and `timeout`, and only in a
@@ -106,6 +106,18 @@ All values numbers or `null`. Missing sensor ⇒ `null`, never a fake zero.
 - `cpu_model`/`cpu_cores` detected once (they cannot change). The model
   drops trademark marks, the base clock and filler words: `Intel(R)
   Core(TM) i7-8550U CPU @ 1.80GHz` reads `Intel Core i7-8550U`.
+
+Accepted limits (by design, not bugs):
+
+- A mount that cannot be read falls back to `/` until the collector
+  restarts. The widget restarts the collector on every source change.
+- `cpu_model`/`cpu_cores` ride with the `load` provider: excluding
+  `load` from `MONITOR_READ` leaves them `null`.
+- GPU sources probe once at startup, in the order of §2.1. A GPU that
+  appears later needs a collector restart.
+- Disk I/O sums whole physical disks only (`sd`, `vd`, `hd`, `nvme`,
+  `mmcblk`, `xvd`, `dasd`). Partitions, `loop`, device-mapper and `md`
+  nodes stay out, so RAID members never count twice.
 
 ### 2.2 Diagnostic JSON (`--info`)
 

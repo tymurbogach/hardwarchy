@@ -84,13 +84,18 @@ veth123:    7000      70    0    0    0     0          0         0     8000     
    eth0:  900000     900    0    0    0     0          0         0   100000     100    0    0    0     0       0          0
 NETEOF
 
-# --- fake /proc/diskstats: only the whole disk "sda" should be counted ----
+# --- fake /proc/diskstats: only whole disks count (sda, xvda, dasda) -----
 FAKE_DISKSTATS="$FAKE_ROOT.diskstats"
 cat > "$FAKE_DISKSTATS" <<'DISKEOF'
    8       0 sda 100 0 5000 10 200 0 6000 20 0 0 0 0 0 0 0
    8       1 sda1 50 0 2000 5 100 0 3000 10 0 0 0 0 0 0 0
+ 202       0 xvda 100 0 5000 10 200 0 6000 20 0 0 0 0 0 0 0
+ 202       1 xvda1 50 0 2000 5 100 0 3000 10 0 0 0 0 0 0 0
+  94       0 dasda 100 0 5000 10 200 0 6000 20 0 0 0 0 0 0 0
+  94       1 dasda1 50 0 2000 5 100 0 3000 10 0 0 0 0 0 0 0
    7       0 loop0 10 0 500 1 5 0 500 1 0 0 0 0 0 0 0
  253       0 dm-0 20 0 800 2 10 0 900 3 0 0 0 0 0 0 0
+   9       0 md0 20 0 800 2 10 0 900 3 0 0 0 0 0 0 0
 DISKEOF
 
 # --- fake /proc/mounts: real filesystems only, one mount per device -------
@@ -186,7 +191,7 @@ if ok_disk:
     used_pct = disk.get("used_pct")
     check("disk used_pct is a real percentage (can't fake statvfs, so range-check only)",
           isinstance(used_pct, int) and 0 <= used_pct <= 100, f"got {used_pct!r}")
-    check("disk I/O only counts the whole disk (sda), not sda1/loop0/dm-0",
+    check("disk I/O only counts whole disks (sda/xvda/dasda), not partitions/loop0/dm-0/md0",
           disk.get("read_bps") == 0 and disk.get("write_bps") == 0, f"got {disk!r}")
     used_b, total_b = disk.get("used_b"), disk.get("total_b")
     check("disk reports used and total bytes", isinstance(used_b, int) and isinstance(total_b, int) and 0 <= used_b <= total_b,
@@ -205,6 +210,22 @@ PYEOF
 if ! python3 "$PY_ASSERT_MAIN" "$OUT_MAIN" "$FAKE_ROOT"; then
   fail "main fake-tree assertions failed (see FAIL lines above)"
 fi
+
+# --- is_whole_disk unit test: source the collector with main stripped -----
+# (the one-shot fixture above is static, so its I/O delta is always zero;
+# this pins which device names count instead).
+if ! bash -c '
+  source <(head -n -1 "$1")
+  is_whole_disk sda && is_whole_disk sdaa &&
+  is_whole_disk xvda && is_whole_disk dasda &&
+  is_whole_disk nvme0n1 && is_whole_disk mmcblk0 &&
+  ! is_whole_disk sda1 && ! is_whole_disk xvda1 && ! is_whole_disk dasda1 &&
+  ! is_whole_disk nvme0n1p1 &&
+  ! is_whole_disk loop0 && ! is_whole_disk dm-0 && ! is_whole_disk md0
+' _ "$SYSREAD"; then
+  fail "is_whole_disk must accept whole disks (incl. xvd/dasd) and reject partitions/virtual/md"
+fi
+pass "is_whole_disk accepts xvd/dasd whole disks, rejects partitions/virtual/md"
 
 # --- empty tree: nulls but valid JSON with fans==[] -----------------------
 if ! MONITOR_HWMON_ROOT="$EMPTY_ROOT" MONITOR_DRM_ROOT="$FAKE_DRM" \

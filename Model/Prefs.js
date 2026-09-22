@@ -253,6 +253,27 @@ function prefsFanNames(v) {
   return out;
 }
 
+// Fan key lists: keep `fan:` keys only, deduplicated, in first-seen
+// order. Unknown ids stay: a docked-away fan must find its order and
+// hidden state when it comes back.
+function prefsCleanFanKeys(list) {
+  if (!prefsIsArray(list)) {
+    return null;
+  }
+  var out = [];
+  var seen = {};
+  var i = 0;
+  for (i = 0; i < list.length; i++) {
+    var k = list[i];
+    if (typeof k !== "string" || k.indexOf("fan:") !== 0 || seen[k]) {
+      continue;
+    }
+    seen[k] = true;
+    out.push(k);
+  }
+  return out;
+}
+
 // One part: every toggle of the default, each falling back on its own.
 function prefsValidatePart(src, d) {
   var s = prefsIsObject(src) ? src : {};
@@ -285,9 +306,9 @@ function prefsValidateGroup(id, src) {
     } else if (k === "mount") {
       out.mount = (typeof s.mount === "string" && s.mount.charAt(0) === "/") ? s.mount : dv;
     } else if (k === "hidden") {
-      out.hidden = prefsCleanStringArray(s.hidden, false) || [];
+      out.hidden = prefsCleanFanKeys(prefsCleanStringArray(s.hidden, false)) || [];
     } else if (k === "order") {
-      out.order = (s.order === null || s.order === undefined) ? null : prefsCleanStringArray(s.order, false);
+      out.order = (s.order === null || s.order === undefined) ? null : prefsCleanFanKeys(prefsCleanStringArray(s.order, false));
     } else if (k === "names") {
       out.names = prefsFanNames(s.names);
     } else if (typeof dv === "boolean") {
