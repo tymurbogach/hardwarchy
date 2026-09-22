@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1
+
+- Replace the marketplace images with the current compact menu.
+- Remove the old menu screenshots that showed retired hardware fact rows.
+- Place a new installation in the left bar section by default.
+
 ## 2.3.0
 
 - Refresh the marketplace preview with the Hardwarchy visual identity.

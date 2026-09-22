@@ -31,7 +31,7 @@ the menu opens, at most once every six hours.
 omarchy plugin add https://github.com/tymurbogach/hardwarchy.git --enable
 ```
 
-The widget starts in the right bar section. Move it when necessary:
+The widget starts in the left bar section. Move it when necessary:
 
 ```bash
 omarchy bar move io.github.tymurbogach.hardwarchy --section center
@@ -61,7 +61,7 @@ GPU support covers NVIDIA, AMD, and Intel. Select the source in the menu when
 the system has more than one GPU. Select the network interface and disk mount
 there too. Network and Disk start off.
 
-![Four real menu cards for CPU, RAM, Net, and Disk](docs/images/menu-overview.png)
+![The current compact Hardwarchy menu](docs/images/menu-overview.png)
 
 ## Configure
 

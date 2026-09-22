@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.tymurbogach.hardwarchy",
   "name": "Hardwarchy",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "author": "Tymur Bogach",
   "license": "MIT",
   "description": "Modular hardware monitoring for Omarchy. Minimal in the bar. Customizable in the menu.",
@@ -12,6 +12,6 @@
     "displayName": "Hardwarchy",
     "category": "System",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "left"
   }
 }
