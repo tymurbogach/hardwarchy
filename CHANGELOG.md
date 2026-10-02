@@ -118,6 +118,6 @@ Clean-room rewrite on a modular base:
 - Menu in sections (Metrics, View, Units & alerts) with per-row
   reordering, adjustable alert thresholds and a reset-defaults footer.
 - Versioned prefs file with validation and migration of pre-1.0 state
-  (legacy keys, legacy `any-monitor.json`, legacy `barStyle` values).
+  (legacy keys and legacy `barStyle` values).
 - Provider-organized collector emitting a versioned (`schema: 1`)
   JSON reading; node + bash test suites; cold-start harness env vars.

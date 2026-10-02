@@ -365,10 +365,9 @@ File `~/.config/omarchy/hardwarchy.json`, versioned:
   - The word draft (`"load": "bar"`, `"temp": "plain"`, …): each word
     maps to its part; `tempColor: "secondary"` → a quiet temp.
 - Corrupt file ⇒ defaults, never a blank bar.
-- Without `hardwarchy.json`, the widget adopts the newest file from
-  before a rename, `modular-hw-monitor.json` (2.0) and then
-  `any-monitor.json` (pre-1.0), and saves it under the current name. It
-  looks once per start and leaves the old file on disk.
+- Without `hardwarchy.json`, the widget adopts `modular-hw-monitor.json`
+  (2.0) and saves it under the current name. It looks once per start and
+  leaves the old file on disk.
 
 ## 8. Harness & tests
 

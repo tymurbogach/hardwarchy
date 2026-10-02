@@ -109,7 +109,7 @@ BarWidget {
   readonly property string prefsPath: root.configDir + "hardwarchy.json"
   // Prefs files from before a rename, newest first. Without a current
   // file, the first one found is re-saved under the current name.
-  readonly property var legacyNames: ["modular-hw-monitor.json", "any-monitor.json"]
+  readonly property var legacyNames: ["modular-hw-monitor.json"]
   property int legacyIndex: -1
   readonly property string legacyPath:
     root.legacyIndex >= 0 && root.legacyIndex < root.legacyNames.length

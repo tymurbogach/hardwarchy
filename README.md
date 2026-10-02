@@ -31,21 +31,6 @@ the menu opens, at most once every six hours.
 omarchy plugin add https://github.com/tymurbogach/hardwarchy.git --enable
 ```
 
-The widget starts in the left bar section. Move it when necessary:
-
-```bash
-omarchy bar move io.github.tymurbogach.hardwarchy --section center
-```
-
-Hardwarchy imports the settings file from Any Monitor on its first start. The
-old plugin does not update in place. Remove it after you confirm that
-Hardwarchy works:
-
-```bash
-omarchy plugin disable io.github.tymurbogach.any-monitor
-omarchy plugin remove io.github.tymurbogach.any-monitor --yes
-```
-
 ## What it shows
 
 | Group | Metrics |
@@ -71,8 +56,7 @@ stops. The General section sets the temperature unit, color strength, gaps, and
 refresh interval.
 
 Hardwarchy saves settings in `~/.config/omarchy/hardwarchy.json`. Missing
-settings use defaults. A file from Modular HW Monitor or Any Monitor migrates
-on first start.
+settings use defaults. A file from Modular HW Monitor migrates on first start.
 
 Optional keys in the widget entry of `shell.json` seed only the first start:
 
