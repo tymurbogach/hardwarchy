@@ -50,10 +50,17 @@ there too. Network and Disk start off.
 
 ## Configure
 
-Open a group card to add or remove its parts, set alert thresholds, and change
-the group order. Each fan has its own card row. Rename a fan or hide it when it
-stops. The General section sets the temperature unit, color strength, gaps, and
-refresh interval.
+Open a group card to add or remove its parts, reorder them with the arrow
+buttons, choose icons in the corresponding part row, and set alert thresholds.
+Only the arrow buttons change part order. The order stays saved after a restart.
+The group cards also set the order of groups. Each fan has its own card row.
+Rename a fan or hide it when it stops. General sets the temperature unit,
+color strength, gaps, and refresh interval.
+
+The icon gap separates marks within one part. The part gap separates the
+label from readings and separates adjacent readings. The cell gap separates
+cells. A gap has no
+visible effect when the corresponding marks or cells are absent.
 
 Hardwarchy saves settings in `~/.config/omarchy/hardwarchy.json`. Missing
 settings use defaults. A file from Modular HW Monitor migrates on first start.

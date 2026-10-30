@@ -17,6 +17,36 @@ function prefsIsObject(v) {
 }
 
 var PREFS_GROUP_IDS = ["cpu", "gpu", "mem", "net", "disk", "fan"];
+var PREFS_PART_ORDER = {
+  cpu: ["label", "load", "clock", "temp", "avg"],
+  gpu: ["label", "load", "clock", "temp", "vram", "power"],
+  mem: ["label", "used", "swap"],
+  net: ["label", "down", "up"],
+  disk: ["label", "used", "read", "write"],
+  fan: ["label", "rpm"]
+};
+var PREFS_ICON_OPTIONS = {
+  cpu: ["", String.fromCodePoint(0xF4BC), String.fromCodePoint(0xF061A)],
+  gpu: ["", String.fromCodePoint(0xF08AE)],
+  mem: [String.fromCodePoint(0xEFC5)],
+  net: ["", String.fromCodePoint(0xEF09), String.fromCodePoint(0xF06F3)],
+  disk: ["", String.fromCodePoint(0xF02CA), String.fromCodePoint(0xEF61)],
+  fan: ["", String.fromCodePoint(0xEFA7), String.fromCodePoint(0xF0210)],
+  temp: ["", String.fromCodePoint(0xF050F), String.fromCodePoint(0xF0510)],
+  down: ["", String.fromCodePoint(0xF06F4), ""],
+  up: ["", String.fromCodePoint(0xF06F6), ""]
+};
+var PREFS_ICON_NAMES = {
+  cpu: ["Microchip", "CPU", "Chip"],
+  gpu: ["Display", "Graphics card"],
+  mem: ["Memory stick"],
+  net: ["Wi-Fi", "Wired network", "Network"],
+  disk: ["Hard drive", "Hard disk", "SD card"],
+  fan: ["Spinner", "Fan", "Fan variant"],
+  temp: ["Thermometer half", "Thermometer", "Thermometer with lines"],
+  down: ["Down arrow", "Network download", "Download"],
+  up: ["Up arrow", "Network upload", "Upload"]
+};
 
 // The GPU sources the collector can read (MONITOR_GPU).
 var PREFS_GPU_SOURCES = ["auto", "nvidia", "amd", "intel"];
@@ -68,6 +98,8 @@ function prefsGroupDefaults(id) {
     g.critUsage = 90;
     g.warnTemp = 75;
     g.critTemp = 90;
+    g.partsOrder = PREFS_PART_ORDER[id].slice();
+    g.icons = prefsValidateIcons(id, {});
     return g;
   }
   if (id === "mem") {
@@ -78,7 +110,8 @@ function prefsGroupDefaults(id) {
       zero: prefsPart({ show: true }, true),
       swap: prefsPart({ bar: false, percent: false, gib: false }),
       warnUsage: 70,
-      critUsage: 90
+      critUsage: 90,
+      partsOrder: PREFS_PART_ORDER.mem.slice(), icons: prefsValidateIcons(id, {})
     };
   }
   if (id === "net") {
@@ -87,7 +120,8 @@ function prefsGroupDefaults(id) {
       iface: "auto",
       label: prefsLabelPart(false),
       down: prefsPart({ icon: true, value: true }),
-      up: prefsPart({ icon: true, value: true })
+      up: prefsPart({ icon: true, value: true }),
+      partsOrder: PREFS_PART_ORDER.net.slice(), icons: prefsValidateIcons(id, {})
     };
   }
   if (id === "disk") {
@@ -100,7 +134,8 @@ function prefsGroupDefaults(id) {
       read: prefsPart({ tag: true, value: true }),
       write: prefsPart({ tag: true, value: true }),
       warnUsage: 70,
-      critUsage: 90
+      critUsage: 90,
+      partsOrder: PREFS_PART_ORDER.disk.slice(), icons: prefsValidateIcons(id, {})
     };
   }
   return {
@@ -112,7 +147,8 @@ function prefsGroupDefaults(id) {
     critRpm: 6000,
     hidden: [],
     order: null,
-    names: {}
+    names: {},
+    partsOrder: PREFS_PART_ORDER.fan.slice(), icons: prefsValidateIcons(id, {})
   };
 }
 
@@ -287,6 +323,43 @@ function prefsValidatePart(src, d) {
   return out;
 }
 
+function prefsValidatePartsOrder(id, value) {
+  var allowed = PREFS_PART_ORDER[id];
+  var out = [];
+  if (prefsIsArray(value)) {
+    for (var i = 0; i < value.length; i++)
+      if (allowed.indexOf(value[i]) >= 0 && out.indexOf(value[i]) < 0) out.push(value[i]);
+  }
+  for (var j = 0; j < allowed.length; j++)
+    if (out.indexOf(allowed[j]) < 0) out.push(allowed[j]);
+  return out;
+}
+
+function prefsApplyGroupPatch(prefs, id, patch) {
+  var next = adoptPrefs(prefs);
+  if (!next.groups[id] || !prefsIsObject(patch)) return next;
+  for (var key in patch) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+    next.groups[id][key] = patch[key];
+  }
+  return adoptPrefs(next);
+}
+
+function prefsValidateIcons(id, value) {
+  var source = prefsIsObject(value) ? value : {};
+  var keys = id === "cpu" || id === "gpu" ? ["label", "temp"]
+    : id === "net" ? ["label", "down", "up"]
+    : ["label"];
+  var out = {};
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    var catalog = PREFS_ICON_OPTIONS[key === "label" ? id : key];
+    out[key] = typeof source[key] === "number" && source[key] >= 0 && source[key] < catalog.length
+      && Math.floor(source[key]) === source[key] ? source[key] : 0;
+  }
+  return out;
+}
+
 // One group: every field falls back to that group's default, unknown
 // fields drop, and the result keeps the default's field order.
 function prefsValidateGroup(id, src) {
@@ -309,6 +382,10 @@ function prefsValidateGroup(id, src) {
       out.hidden = prefsCleanFanKeys(prefsCleanStringArray(s.hidden, false)) || [];
     } else if (k === "order") {
       out.order = (s.order === null || s.order === undefined) ? null : prefsCleanFanKeys(prefsCleanStringArray(s.order, false));
+    } else if (k === "partsOrder") {
+      out.partsOrder = prefsValidatePartsOrder(id, s.partsOrder);
+    } else if (k === "icons") {
+      out.icons = prefsValidateIcons(id, s.icons);
     } else if (k === "names") {
       out.names = prefsFanNames(s.names);
     } else if (typeof dv === "boolean") {

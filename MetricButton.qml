@@ -33,6 +33,7 @@ Item {
   property real partGap: 0
   // Half the gap to the neighbouring cell; each side owns half.
   property real sideMargin: 5
+  property real leadingGap: 0
   property real slotSize: 0
   property bool vertical: false
 
@@ -113,9 +114,9 @@ Item {
 
   implicitWidth: root.vertical
     ? (root.slotSize > 0 ? root.slotSize : root.contentHeight)
-    : root.contentWidth + root.sideMargin * 2
+    : root.contentWidth + root.sideMargin * 2 + root.leadingGap
   implicitHeight: root.vertical
-    ? root.contentWidth + root.sideMargin * 2
+    ? root.contentWidth + root.sideMargin * 2 + root.leadingGap
     : (root.slotSize > 0 ? root.slotSize : root.contentHeight)
 
   opacity: root.concealed ? 0 : (root.dimmed ? 0.45 : 1)
@@ -127,6 +128,8 @@ Item {
   Row {
     id: content
     anchors.centerIn: parent
+    anchors.horizontalCenterOffset: root.vertical ? 0 : root.leadingGap / 2
+    anchors.verticalCenterOffset: root.vertical ? root.leadingGap / 2 : 0
     height: root.contentHeight
     rotation: root.vertical ? 90 : 0
 
@@ -148,9 +151,21 @@ Item {
         // under every icon and word. A missing glyph inks nothing, so
         // fall back to the advance width.
         TextMetrics {
-          id: ink
+          id: baseInk
           font.family: root.fontFamily
           font.pixelSize: root.fontSize
+          text: piece.kind === "mark" ? piece.modelData.text : ""
+        }
+        // Some Nerd Font glyphs are much smaller than others at the same
+        // pixel size. Size icons by their ink, but keep words and R/W tags.
+        readonly property real markSize: kind !== "mark" || modelData.isWord || modelData.isTag
+          ? root.fontSize
+          : root.fontSize * Math.min(2, Math.max(0.85,
+              root.gaugeHeight / Math.max(1, baseInk.tightBoundingRect.height)))
+        TextMetrics {
+          id: ink
+          font.family: root.fontFamily
+          font.pixelSize: piece.markSize
           text: piece.kind === "mark" ? piece.modelData.text : ""
         }
         readonly property real inkLeft: ink.tightBoundingRect.width > 0 ? ink.tightBoundingRect.x : 0
@@ -162,12 +177,16 @@ Item {
         height: root.contentHeight
 
         Text {
+          id: markText
           visible: piece.kind === "mark"
           x: piece.gap - piece.inkLeft
+          // Align each glyph's ink centre with the digits and gauge.
+          y: root.gaugeY + root.gaugeHeight / 2
+            - (markText.baselineOffset + ink.tightBoundingRect.y + ink.tightBoundingRect.height / 2)
           text: piece.kind === "mark" ? piece.modelData.text : ""
           color: root.pieceColor(piece.modelData)
           font.family: root.fontFamily
-          font.pixelSize: root.fontSize
+          font.pixelSize: piece.markSize
           renderType: Text.NativeRendering
         }
 

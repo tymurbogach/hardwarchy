@@ -59,7 +59,7 @@ BarWidget {
   readonly property real iconGap: root.prefs.gaps.icon
   readonly property real partGap: root.prefs.gaps.part
   readonly property real metricGap: root.prefs.gaps.metric
-  readonly property real outerMargin: Math.max(0, 8.5 - root.metricGap / 2)
+  readonly property real outerMargin: 8.5
 
   // Urgent color with a transparency guard: an unthemed urgent arrives
   // transparent, and warming toward that would fade the read-out out.
@@ -133,10 +133,8 @@ BarWidget {
   // Every per-group change goes through one patch, so each click writes
   // one consistent file.
   function patchGroup(id, patch) {
-    var p = Prefs.adoptPrefs(root.prefs)
-    if (!p.groups[id]) return
-    for (var k in patch) p.groups[id][k] = patch[k]
-    root.commit(p)
+    if (!root.prefs.groups[id]) return
+    root.commit(Prefs.prefsApplyGroupPatch(root.prefs, id, patch))
   }
 
   // Back to that group's defaults; an empty group validates to them.
@@ -210,6 +208,23 @@ BarWidget {
     var p = Prefs.adoptPrefs(root.prefs)
     p.order = order
     root.commit(p)
+  }
+
+  function movePart(id, key, delta) {
+    var order = root.prefs.groups[id].partsOrder.slice()
+    var at = order.indexOf(key)
+    var to = at + delta
+    if (at < 0 || to < 0 || to >= order.length) return
+    var other = order[to]
+    order[to] = key
+    order[at] = other
+    root.patchGroup(id, { partsOrder: order })
+  }
+
+  function setGroupIcon(id, key, value) {
+    var icons = Object.assign({}, root.prefs.groups[id].icons)
+    icons[key] = value
+    root.patchGroup(id, { icons: icons })
   }
 
   function setUnit(value) {
@@ -465,6 +480,7 @@ BarWidget {
       // built its pieces, so this only styles them.
       delegate: MetricButton {
         required property var modelData
+        required property int index
 
         bar: root.bar
         pieces: modelData.pieces
@@ -481,7 +497,8 @@ BarWidget {
 
         iconGap: Style.spaceReal(root.iconGap)
         partGap: Style.spaceReal(root.partGap)
-        sideMargin: Style.spaceReal(root.metricGap / 2)
+        sideMargin: 0
+        leadingGap: index > 0 ? Style.spaceReal(root.metricGap) : 0
 
         tooltipText: root.empty
           ? "Every metric is hidden.\nClick to open the menu and bring one back."

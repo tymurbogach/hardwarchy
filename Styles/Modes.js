@@ -23,6 +23,19 @@ var LOAD_PARTS = {
 
 var LOAD_GROUPS = ["cpu", "gpu", "mem", "disk"];
 
+// Keep this catalog in sync with PREFS_ICON_OPTIONS. The model test checks it.
+var MODES_ICON_OPTIONS = {
+  cpu: ["", String.fromCodePoint(0xF4BC), String.fromCodePoint(0xF061A)],
+  gpu: ["", String.fromCodePoint(0xF08AE)],
+  mem: [String.fromCodePoint(0xEFC5)],
+  net: ["", String.fromCodePoint(0xEF09), String.fromCodePoint(0xF06F3)],
+  disk: ["", String.fromCodePoint(0xF02CA), String.fromCodePoint(0xEF61)],
+  fan: ["", String.fromCodePoint(0xEFA7), String.fromCodePoint(0xF0210)],
+  temp: ["", String.fromCodePoint(0xF050F), String.fromCodePoint(0xF0510)],
+  down: ["", String.fromCodePoint(0xF06F4), ""],
+  up: ["", String.fromCodePoint(0xF06F6), ""]
+};
+
 // The next load a right-click shows: the number, then the bar, then both.
 // Only those two toggles move; GiB and the color stay as they are.
 function nextLoad(part, numberKey) {
@@ -87,7 +100,7 @@ function modesQuiet(part) {
 //                 `padQuiet` is false
 // `gap` is the space before it: "none" (first), "tight" (the iconGap,
 // inside one part) or "part" (the partGap, between two parts). A mark
-// hugs what it labels; every other part boundary takes the part gap.
+// only applies inside a part. Every part boundary takes the part gap.
 // A quiet piece is always muted and never warms.
 
 function modesPiece(kind, text, ratio, pad, quiet, severity) {
@@ -122,7 +135,7 @@ function modesAddPart(pieces, part) {
     } else if (prev === null) {
       part[i].gap = "none";
     } else {
-      part[i].gap = prev.isMark === true && prev.isWord !== true ? "tight" : "part";
+      part[i].gap = "part";
     }
     pieces.push(part[i]);
   }
@@ -208,7 +221,9 @@ function modesMarkedParts(m, part, markKey, text) {
   var sev = m.severity || 0;
   var out = [];
   if (modesOn(part, markKey) && modesText(m.glyph) !== "") {
-    out.push(modesMark(m.glyph, quiet, sev));
+    var mark = modesMark(m.glyph, quiet, sev);
+    mark.isTag = markKey === "tag";
+    out.push(mark);
   }
   out.push(modesPiece("text", text, -1, 0, quiet, sev));
   return [out];
@@ -238,13 +253,31 @@ function modesLabelPart(first, label) {
   var quiet = modesQuiet(label);
   var out = [];
   if (modesOn(label, "icon") && modesText(first.groupGlyph) !== "") {
-    out.push(modesMark(first.groupGlyph, quiet, 0));
+    var icon = modesMark(first.groupGlyph, quiet, 0);
+    icon.isLabel = true;
+    out.push(icon);
   }
   if (modesOn(label, "word") && modesText(first.word) !== "") {
     var word = modesMark(first.word, quiet, 0);
     word.isWord = true;
+    word.isLabel = true;
     out.push(word);
   }
+  return out;
+}
+
+function modesIcon(prefs, id, key, fallback) {
+  var group = modesGroup(prefs, id);
+  var choice = group.icons && group.icons[key];
+  var list = MODES_ICON_OPTIONS[key === "label" ? id : key];
+  return list && list[choice] ? list[choice] : fallback;
+}
+
+function modesOrderedParts(parts, order) {
+  if (!modesIsArray(order)) return parts;
+  var out = [];
+  for (var i = 0; i < order.length; i++)
+    if (parts[order[i]]) out = out.concat(parts[order[i]]);
   return out;
 }
 
@@ -280,6 +313,8 @@ function modesCell(key, device, metrics, labelPart, parts, dim) {
       labelPart[i].severity = severity;
     }
   }
+  for (i = 0; i < readings.length; i++)
+    if (readings[i].isLabel && !readings[i].quiet) readings[i].severity = severity;
   var pieces = [];
   modesAddPart(pieces, labelPart);
   for (i = 0; i < parts.length; i++) {
@@ -305,7 +340,11 @@ function groupCells(items, prefs, id, vertical) {
       var rpm = modesOn(g.rpm, "value")
         ? [[modesPiece("text", rpmText, -1, 0, modesQuiet(g.rpm), list[i].severity || 0)]]
         : [];
-      cell = modesCell(list[i].key, id, [list[i]], modesLabelPart(list[i], g.label), rpm, list[i].dim);
+      if (rpm.length === 0) continue;
+      var fanMetric = Object.assign({}, list[i], { groupGlyph: modesIcon(prefs, id, "label", list[i].groupGlyph) });
+      var fanParts = { label: [modesLabelPart(fanMetric, g.label)], rpm: rpm };
+      var fanOrder = g.partsOrder || ["label", "rpm"];
+      cell = modesCell(list[i].key, id, [list[i]], [], modesOrderedParts(fanParts, fanOrder), list[i].dim);
       if (cell) {
         out.push(cell);
       }
@@ -313,31 +352,38 @@ function groupCells(items, prefs, id, vertical) {
     return out;
   }
   var k = modesByKind(list);
-  var parts = [];
+  var parts = {};
   if (id === "cpu" || id === "gpu") {
-    parts = parts.concat(modesLoadParts(k.usage, g.load, g.zero, vertical));
-    parts = parts.concat(modesShowParts(k.usage ? k.usage.clock : "", g.clock));
+    parts.load = modesLoadParts(k.usage, g.load, g.zero, vertical);
+    parts.clock = modesShowParts(k.usage ? k.usage.clock : "", g.clock);
     var temp = k.temp || null;
     var tempText = temp ? modesText(temp.bar) + (modesOn(g.temp, "unit") ? modesText(temp.unit) : "") : "";
-    parts = parts.concat(modesMarkedParts(temp, g.temp, "icon", tempText));
+    var tempMetric = temp ? Object.assign({}, temp, { glyph: modesIcon(prefs, id, "temp", temp.glyph) }) : null;
+    parts.temp = modesMarkedParts(tempMetric, g.temp, "icon", tempText);
     if (id === "cpu") {
-      parts = parts.concat(modesAvgParts(k.avg, g.avg));
+      parts.avg = modesAvgParts(k.avg, g.avg);
     } else {
-      parts = parts.concat(modesUsedParts(k.vram, g.vram, g.zero, vertical));
-      parts = parts.concat(modesShowParts(k.power ? k.power.bar : "", g.power));
+      parts.vram = modesUsedParts(k.vram, g.vram, g.zero, vertical);
+      parts.power = modesShowParts(k.power ? k.power.bar : "", g.power);
     }
   } else if (id === "mem") {
-    parts = parts.concat(modesUsedParts(k.usage, g.used, g.zero, vertical));
-    parts = parts.concat(modesUsedParts(k.swap, g.swap, g.zero, vertical));
+    parts.used = modesUsedParts(k.usage, g.used, g.zero, vertical);
+    parts.swap = modesUsedParts(k.swap, g.swap, g.zero, vertical);
   } else if (id === "net") {
-    parts = parts.concat(modesMarkedParts(k.down, g.down, "icon", k.down ? k.down.bar : ""));
-    parts = parts.concat(modesMarkedParts(k.up, g.up, "icon", k.up ? k.up.bar : ""));
+    parts.down = modesMarkedParts(k.down ? Object.assign({}, k.down, { glyph: modesIcon(prefs, id, "down", k.down.glyph) }) : null, g.down, "icon", k.down ? k.down.bar : "");
+    parts.up = modesMarkedParts(k.up ? Object.assign({}, k.up, { glyph: modesIcon(prefs, id, "up", k.up.glyph) }) : null, g.up, "icon", k.up ? k.up.bar : "");
   } else if (id === "disk") {
-    parts = parts.concat(modesUsedParts(k.usage, g.used, g.zero, vertical));
-    parts = parts.concat(modesMarkedParts(k.read, g.read, "tag", k.read ? k.read.bar : ""));
-    parts = parts.concat(modesMarkedParts(k.write, g.write, "tag", k.write ? k.write.bar : ""));
+    parts.used = modesUsedParts(k.usage, g.used, g.zero, vertical);
+    parts.read = modesMarkedParts(k.read ? Object.assign({}, k.read, { glyph: modesIcon(prefs, id, "read", k.read.glyph) }) : null, g.read, "tag", k.read ? k.read.bar : "");
+    parts.write = modesMarkedParts(k.write ? Object.assign({}, k.write, { glyph: modesIcon(prefs, id, "write", k.write.glyph) }) : null, g.write, "tag", k.write ? k.write.bar : "");
   }
-  cell = modesCell(id, id, list, modesLabelPart(list[0], g.label), parts, list[0].dim);
+  var labelMetric = Object.assign({}, list[0], { groupGlyph: modesIcon(prefs, id, "label", list[0].groupGlyph) });
+  parts.label = [modesLabelPart(labelMetric, g.label)];
+  var hasReading = false;
+  for (var partKey in parts)
+    if (partKey !== "label" && parts[partKey].length > 0 && parts[partKey].some(function(p) { return p.length > 0; })) hasReading = true;
+  if (!hasReading) return out;
+  cell = modesCell(id, id, list, [], modesOrderedParts(parts, g.partsOrder), list[0].dim);
   if (cell) {
     out.push(cell);
   }

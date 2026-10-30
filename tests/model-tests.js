@@ -396,14 +396,14 @@ function prefsWith(id, fields) {
   var cpu = cellOf(d, "cpu");
   eq(cpu.key + "/" + cpu.device, "cpu/cpu", "a group's cell is keyed by the group");
   eq(texts(cpu), GLYPH.cpu + "|12%|46°", "default CPU: icon, number, temp");
-  eq(gaps(cpu), "none,tight,part", "an icon hugs the load; the temp is a new part");
+  eq(gaps(cpu), "none,part,part", "the label and readings are separate parts");
   deepEq(cpu.metrics.map(function (m) { return m.key; }), ["cpu_usage", "cpu_temp", "cpu_avg"], "the cell carries its metrics for the tooltip");
   eq(texts(cellOf(d, "gpu")), GLYPH.gpu + "|23%|61°", "default GPU");
   eq(texts(cellOf(d, "mem")), "RAM|16%", "default RAM: a word and a number");
   eq(gaps(cellOf(d, "mem")), "none,part", "a word is its own part");
   var net = cellOf(d, "net");
   eq(texts(net), GLYPH.net + "|" + GLYPH.down + "|1.2M|" + GLYPH.up + "|340K", "default Net: each rate after its arrow");
-  eq(gaps(net), "none,tight,tight,part,tight", "each arrow hugs its rate; up is a new part");
+  eq(gaps(net), "none,part,tight,part,tight", "each arrow hugs its rate; the label is a part");
   eq(texts(cellOf(d, "disk")), GLYPH.disk + "|63%|R|40K|W|12K", "default Disk: used, then tagged read and write");
   eq(texts(cellOf(d, "fan")), GLYPH.fan + "|2262", "default fan");
 
@@ -413,7 +413,7 @@ function prefsWith(id, fields) {
   approx(bar.pieces[1].ratio, 0.12, 1e-9, "the gauge carries the usage ratio");
   var both = cellOf(prefsWith("cpu", { load: { bar: true, number: true } }), "cpu");
   eq(texts(both), GLYPH.cpu + "|#|12%|46°", "bar and number both on: gauge then digits");
-  eq(gaps(both), "none,tight,tight,part", "a gauge hugs its own digits");
+  eq(gaps(both), "none,part,tight,part", "a gauge hugs its own digits");
   eq(texts(cellOf(prefsWith("cpu", { load: { bar: true, number: false } }), "cpu", null, true)), GLYPH.cpu + "|12%|46°",
     "a vertical bar draws digits instead of a gauge");
 
@@ -432,7 +432,7 @@ function prefsWith(id, fields) {
   eq(texts(cellOf(clockOnly, "cpu")), GLYPH.cpu + "|3.2G|46°", "no load, but the clock stays");
   var tempFull = cellOf(prefsWith("cpu", { temp: { icon: true, value: true, unit: true } }), "cpu");
   eq(texts(tempFull), GLYPH.cpu + "|12%|" + GLYPH.temp + "|46°C", "thermometer, value and unit letter");
-  eq(gaps(tempFull), "none,tight,part,tight", "the thermometer hugs its temp");
+  eq(gaps(tempFull), "none,part,part,tight", "the thermometer hugs its temp");
   eq(texts(cellOf(prefsWith("cpu", { temp: { icon: true, value: false } }), "cpu")), GLYPH.cpu + "|12%", "an icon never shows without its value");
   eq(texts(cellOf(prefsWith("cpu", { avg: { one: true, fifteen: true } }), "cpu")), GLYPH.cpu + "|12%|46°|0.42 0.55", "the chosen load windows");
 
@@ -562,18 +562,67 @@ function prefsWith(id, fields) {
 })();
 
 // ---------- prefs (v2) ----------
+(function testCustomization() {
+  deepEq(S("MODES_ICON_OPTIONS"), S("PREFS_ICON_OPTIONS"), "rendered and selectable icon catalogs stay in sync");
+  var names = S("PREFS_ICON_NAMES");
+  var icons = S("PREFS_ICON_OPTIONS");
+  ok(Object.keys(icons).every(function(key) { return names[key] && names[key].length === icons[key].length; }),
+    "every icon choice has a descriptive tooltip");
+  function customizedCell(prefs) {
+    return groupCells(metricsFn(sampleReading(), prefs).filter(function(m) { return m.device === "cpu"; }), prefs, "cpu", false)[0];
+  }
+  var p = adoptPrefs({ groups: { cpu: {
+    partsOrder: ["temp", "load", "label", "temp", "bogus"],
+    icons: { label: 1, temp: 2, unknown: 2 },
+    gaps: { icon: 7, part: 9, metric: 13 }
+  } } });
+  deepEq(p.groups.cpu.partsOrder, ["temp", "load", "label", "clock", "avg"], "part order drops duplicates and appends missing parts");
+  deepEq(p.groups.cpu.icons, { label: 1, temp: 2 }, "icon choices are limited to known marks");
+  eq(Object.prototype.hasOwnProperty.call(p.groups.cpu, "gaps"), false, "obsolete group gaps are dropped");
+  var cell = customizedCell(p);
+  eq(cell.pieces.map(function (x) { return x.text; }).join("|"), "46°|12%|" + String.fromCodePoint(0xF4BC), "part order and selected icon render together");
+  deepEq(cell.pieces.map(function (x) { return x.gap; }), ["none", "part", "part"], "reordered parts keep part gaps");
+  var old = adoptPrefs({ groups: { cpu: { enabled: true } } });
+  deepEq(old.groups.cpu.partsOrder, DEFAULTS.groups.cpu.partsOrder, "old preferences gain default part order");
+  eq(adoptPrefs({ groups: { cpu: { icons: { label: 99 } } } }).groups.cpu.icons.label, 0, "unknown icon choice falls back");
+  deepEq(adoptPrefs(serialize(p)).groups.cpu, p.groups.cpu, "customization survives serialization");
+  var patchGroup = S("prefsApplyGroupPatch");
+  var blank = adoptPrefs({ groups: { cpu: {
+    label: { icon: false, word: false }, load: { bar: false, number: false }, temp: { value: false }
+  } } });
+  var icon = { icon: true, word: false };
+  var temp = { value: true };
+  var left = patchGroup(patchGroup(blank, "cpu", { label: icon }), "cpu", { temp: temp });
+  var right = patchGroup(patchGroup(blank, "cpu", { temp: temp }), "cpu", { label: icon });
+  deepEq(left.groups.cpu.partsOrder, blank.groups.cpu.partsOrder, "icon then temperature does not change order");
+  deepEq(right.groups.cpu.partsOrder, blank.groups.cpu.partsOrder, "temperature then icon does not change order");
+  eq(customizedCell(right).pieces.map(function(x) { return x.text; }).join("|"), GLYPH.cpu + "|46°",
+    "toggle order does not affect bar order");
+  var moved = patchGroup(right, "cpu", { partsOrder: ["temp", "label", "load", "clock", "avg"] });
+  eq(customizedCell(moved).pieces.map(function(x) { return x.text; }).join("|"), "46°|" + GLYPH.cpu,
+    "an explicit arrow order changes bar order");
+  deepEq(adoptPrefs(serialize(moved)).groups.cpu.partsOrder, moved.groups.cpu.partsOrder,
+    "explicit arrow order persists on disk");
+  var loadOn = patchGroup(blank, "cpu", cycleLoadPatch(blank, "cpu"));
+  deepEq(loadOn.groups.cpu.partsOrder, blank.groups.cpu.partsOrder, "right-click activation preserves order");
+  eq(icons.mem.length, 1, "RAM has one distinct icon choice");
+  eq(icons.gpu.length, 2, "GPU has no duplicate graphics card variant");
+  eq(adoptPrefs({ groups: { mem: { icons: { label: 1 } } } }).groups.mem.icons.label, 0,
+    "the removed duplicate RAM option falls back to its original icon");
+})();
+
 (function testPrefs() {
   deepEq(Object.keys(DEFAULTS), ["version", "order", "groups", "unit", "colorIntensity", "gaps", "refresh"], "DEFAULTS top level");
   eq(DEFAULTS.version, 2, "DEFAULTS version 2");
   deepEq(Object.keys(DEFAULTS.groups.cpu),
-    ["enabled", "label", "load", "zero", "clock", "temp", "avg", "warnUsage", "critUsage", "warnTemp", "critTemp"], "CPU fields in bar order");
+    ["enabled", "label", "load", "zero", "clock", "temp", "avg", "warnUsage", "critUsage", "warnTemp", "critTemp", "partsOrder", "icons"], "CPU fields in bar order");
   deepEq(Object.keys(DEFAULTS.groups.gpu),
-    ["enabled", "adapter", "label", "load", "zero", "clock", "temp", "vram", "power", "warnUsage", "critUsage", "warnTemp", "critTemp"], "GPU fields");
-  deepEq(Object.keys(DEFAULTS.groups.mem), ["enabled", "label", "used", "zero", "swap", "warnUsage", "critUsage"], "memory fields");
-  deepEq(Object.keys(DEFAULTS.groups.net), ["enabled", "iface", "label", "down", "up"], "net fields");
-  deepEq(Object.keys(DEFAULTS.groups.disk), ["enabled", "mount", "label", "used", "zero", "read", "write", "warnUsage", "critUsage"], "disk fields");
+    ["enabled", "adapter", "label", "load", "zero", "clock", "temp", "vram", "power", "warnUsage", "critUsage", "warnTemp", "critTemp", "partsOrder", "icons"], "GPU fields");
+  deepEq(Object.keys(DEFAULTS.groups.mem), ["enabled", "label", "used", "zero", "swap", "warnUsage", "critUsage", "partsOrder", "icons"], "memory fields");
+  deepEq(Object.keys(DEFAULTS.groups.net), ["enabled", "iface", "label", "down", "up", "partsOrder", "icons"], "net fields");
+  deepEq(Object.keys(DEFAULTS.groups.disk), ["enabled", "mount", "label", "used", "zero", "read", "write", "warnUsage", "critUsage", "partsOrder", "icons"], "disk fields");
   deepEq(Object.keys(DEFAULTS.groups.fan),
-    ["enabled", "label", "rpm", "showStopped", "warnRpm", "critRpm", "hidden", "order", "names"], "fan fields");
+    ["enabled", "label", "rpm", "showStopped", "warnRpm", "critRpm", "hidden", "order", "names", "partsOrder", "icons"], "fan fields");
   deepEq(DEFAULTS.groups.cpu.label, { icon: true, word: false, quiet: false }, "CPU starts as an icon");
   deepEq(DEFAULTS.groups.cpu.load, { bar: false, number: true, quiet: false }, "CPU load starts as a number");
   deepEq(DEFAULTS.groups.cpu.zero, { show: true, quiet: true }, "the leading zero starts shown and quiet");

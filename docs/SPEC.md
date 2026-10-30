@@ -186,7 +186,7 @@ found). Six groups own them: `cpu`, `gpu`, `mem`, `net`, `disk`, `fan`.
 ## 4. Cells
 
 Every group draws one cell; each fan draws its own. A cell is a row of
-pieces in a fixed order. Each piece is a **part**: boolean toggles that
+pieces in the group's saved order. Each piece is a **part**: boolean toggles that
 add or remove what it draws — several can be on at once — and its own
 color, `quiet` (muted, never warms) or regular. Every combination is
 valid.
@@ -237,10 +237,11 @@ what I/O counts. A detail never repeats a headline. Nulls are skipped.
   mem or disk cell ⇒ that group's next load: number → bar → both →
   number (a load that was off comes back as the number). Right-click on
   net or a fan opens the menu.
-- Three gaps, all measured ink to ink, all in the prefs: `icon` inside
-  one part (a mark and its reading, a gauge and its digits, the label
-  icon and what follows it), `part` between two parts, `metric` between
-  two cells. Missing glyphs fall back to advance width.
+- Three gaps, all measured ink to ink: `icon` inside one part (a mark
+  and its reading, a gauge and its digits, or a label icon and word),
+  `part` between parts including the label and first reading, and
+  `metric` before each cell after the first. All gaps are global.
+  Missing glyphs fall back to advance width.
 - Text keeps its line box centred in the bar slot, so the read-out
   shares a baseline with neighbouring widgets. The gauge centres on the
   digits' ink, is about 0.93 em tall (the icon ink height) and half as
@@ -269,14 +270,17 @@ An open card lists, top to bottom:
 0. The source, one choice: GPU `Source` (Auto and the answering
    sources), Net `Link` (Auto and the interfaces), Disk `Mount` (the
    mounts). A choice that is gone right now stays listed.
-1. One row per part, in bar order: chips on the left that add or remove
-   each toggle, and the part's Quiet chip (a half-filled circle) at the
-   far right. A chip that needs another (an icon needs its value) is
-   disabled without it. The `Zero` sub row shows only with digits.
+1. One row per part, in the group's saved order: chips on the left add or
+   remove each toggle. Quiet and move arrows sit at the right. The
+   `Zero` sub row follows its reading and cannot move independently.
+   A chip that needs another (an icon needs its value) is disabled.
+   Only the move arrows change the group's saved part order. Toggling,
+   muting or hiding a part keeps its position.
 2. Fans: `Stopped` (show stopped fans or not), then one line per fan:
    on/off switch, name (renamed in place; empty resets), value, move
    up/down.
-3. Alerts: warn/crit steppers for the readings that warm and show.
+3. Alerts. Icon choices appear in the relevant part's row and use a
+   validated catalog.
 4. `Reset <group>` at the far right, for that group alone.
 
 Below the cards, collapsed **General**: Color %, Unit °C · °F, the three
@@ -325,7 +329,9 @@ File `~/.config/omarchy/hardwarchy.json`, versioned:
            "clock": {"show": false, "quiet": false},
            "temp": {"icon": false, "value": true, "unit": false, "quiet": false},
            "avg": {"one": false, "five": false, "fifteen": false, "quiet": false},
-           "warnUsage": 70, "critUsage": 90, "warnTemp": 75, "critTemp": 90},
+           "warnUsage": 70, "critUsage": 90, "warnTemp": 75, "critTemp": 90,
+           "partsOrder": ["label", "load", "clock", "temp", "avg"],
+           "icons": {"label": 0, "temp": 0}},
    "gpu": {"enabled": true, "adapter": "auto", …the cpu parts without avg…,
            "vram": {"bar": false, "percent": false, "gib": false, "quiet": false},
            "power": {"show": false, "quiet": false}, …thresholds…},

@@ -56,9 +56,7 @@ ShellRoot {
   function commit(next) { shell.prefs = Prefs.adoptPrefs(next) }
 
   function patchGroup(id, fields) {
-    var p = Prefs.adoptPrefs(shell.prefs)
-    for (var k in fields) p.groups[id][k] = fields[k]
-    shell.commit(p)
+    shell.commit(Prefs.prefsApplyGroupPatch(shell.prefs, id, fields))
   }
 
   readonly property bool fakeGpu: shell.env("FAKE_GPU") === "1"
@@ -152,6 +150,7 @@ ShellRoot {
 
             delegate: MetricButton {
               required property var modelData
+              required property int index
 
               pieces: modelData.pieces
               dimmed: modelData.dim
@@ -163,7 +162,8 @@ ShellRoot {
               warmth: shell.prefs.colorIntensity / 100
               iconGap: shell.prefs.gaps.icon
               partGap: shell.prefs.gaps.part
-              sideMargin: shell.prefs.gaps.metric / 2
+              sideMargin: 0
+              leadingGap: index > 0 ? shell.prefs.gaps.metric : 0
               slotSize: 40
               onPressed: function(button) {
                 var patch = Modes.cycleLoadPatch(shell.prefs, modelData.device)

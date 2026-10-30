@@ -15,6 +15,7 @@ import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model/Metrics.js" as Metrics
+import "Model/Prefs.js" as Prefs
 import "Menu"
 
 Panel {
@@ -152,6 +153,11 @@ Panel {
     return id === "fan" ? "Name" : (Metrics.GROUP_LABELS[id] || id)
   }
 
+  function iconGlyph(g, id, key) {
+    var list = Prefs.PREFS_ICON_OPTIONS[key === "label" ? id : key] || []
+    return list[g.icons && g.icons[key] || 0] || ""
+  }
+
   // Every row of one group's card, top to bottom: source, pieces in bar
   // order (sub rows only while they apply), alerts, fans, reset.
   function rowsFor(id, g, reading) {
@@ -166,13 +172,13 @@ Panel {
       rows.push(root.choiceRow("iface", "Link", g.iface, r.net ? r.net.ifaces : [], true, root.sourceNames))
     if (id === "disk")
       rows.push(root.choiceRow("mount", "Mount", g.mount, r.disk ? r.disk.mounts : [], false, null))
-    rows.push(root.partRow("label", "Label", [root.chip("icon", Metrics.GLYPH[id] || ""), root.chip("word", root.groupWord(id))]))
+    rows.push(root.partRow("label", "Label", [root.chip("icon", root.iconGlyph(g, id, "label")), root.chip("word", root.groupWord(id))]))
     if (id === "cpu" || id === "gpu") {
       rows.push(root.partRow("load", "Load", [root.chip("bar", "", "", "gauge"), root.chip("number", "%")]))
       if (load.number === true)
         rows.push(root.partRow("zero", "Zero", [root.chip("show", "0")], true))
       rows.push(root.partRow("clock", "Clock", [root.chip("show", "G")]))
-      rows.push(root.partRow("temp", "Temp", [root.chip("icon", Metrics.GLYPH.temp, "value"), root.chip("value", "°"),
+      rows.push(root.partRow("temp", "Temp", [root.chip("icon", root.iconGlyph(g, id, "temp"), "value"), root.chip("value", "°"),
         root.chip("unit", root.prefs && root.prefs.unit === "F" ? "°F" : "°C", "value")]))
       if (id === "cpu") {
         rows.push(root.partRow("avg", "Avg", [root.chip("one", "1m"), root.chip("five", "5m"), root.chip("fifteen", "15m")]))
@@ -191,8 +197,8 @@ Panel {
         rows.push(root.markedRow("write", "Write", "tag", "W", "B/s"))
       }
     } else if (id === "net") {
-      rows.push(root.markedRow("down", "Down", "icon", Metrics.GLYPH.down, "B/s"))
-      rows.push(root.markedRow("up", "Up", "icon", Metrics.GLYPH.up, "B/s"))
+      rows.push(root.markedRow("down", "Down", "icon", root.iconGlyph(g, id, "down"), "B/s"))
+      rows.push(root.markedRow("up", "Up", "icon", root.iconGlyph(g, id, "up"), "B/s"))
     } else if (id === "fan") {
       rows.push(root.partRow("rpm", "RPM", [root.chip("value", "####"), root.chip("unit", "RPM", "value")]))
       rows.push({ type: "flag", key: "showStopped", title: "Stopped", label: "0 RPM" })
@@ -209,8 +215,30 @@ Panel {
       rows.push({ type: "limit", key: "rpmLimit", title: "Alert", warn: "warnRpm", crit: "critRpm", step: 250, unit: "" })
       rows.push({ type: "fans", key: "fans" })
     }
-    rows.push({ type: "reset", key: "reset", title: "", label: "Reset " + (Metrics.GROUP_LABELS[id] || id) })
-    return rows
+    for (var iconRow = 0; iconRow < rows.length; iconRow++) {
+      var row = rows[iconRow]
+      if (row.type === "part" && g.icons && Object.prototype.hasOwnProperty.call(g.icons, row.key)) {
+        var catalogKey = row.key === "label" ? id : row.key
+        row.iconOptions = Prefs.PREFS_ICON_OPTIONS[catalogKey]
+        row.iconNames = Prefs.PREFS_ICON_NAMES[catalogKey]
+      }
+    }
+    var byKey = {}
+    var ordered = []
+    for (var n = 0; n < rows.length; n++) byKey[rows[n].key] = rows[n]
+    if (byKey.adapter) ordered.push(byKey.adapter)
+    if (byKey.iface) ordered.push(byKey.iface)
+    if (byKey.mount) ordered.push(byKey.mount)
+    for (var o = 0; o < g.partsOrder.length; o++) {
+      var key = g.partsOrder[o]
+      if (byKey[key]) ordered.push(byKey[key])
+      if (key === "load" || key === "used") if (byKey.zero) ordered.push(byKey.zero)
+    }
+    for (var m = 0; m < rows.length; m++)
+      if (g.partsOrder.indexOf(rows[m].key) < 0 && rows[m].key !== "zero"
+          && rows[m].type !== "choice") ordered.push(rows[m])
+    ordered.push({ type: "reset", key: "reset", title: "", label: "Reset " + (Metrics.GROUP_LABELS[id] || id) })
+    return ordered
   }
 
   // What the buttons of one row show and do. A part row's chips add or
@@ -225,8 +253,19 @@ Panel {
         out.push({ label: c.label, on: p[c.key] === true, enabled: c.needs === "" || p[c.needs] === true,
           preview: c.preview, act: { t: "toggle", part: spec.key, k: c.key } })
       }
+      if (spec.iconOptions && spec.iconOptions.length > 1) {
+        for (i = 0; i < spec.iconOptions.length; i++)
+          out.push({ label: spec.iconOptions[i], on: g.icons[spec.key] === i,
+            tooltip: spec.iconNames[i] + (p.icon === true ? "" : " (enable Icon to show)"),
+            act: { t: "icon", k: spec.key, v: i } })
+      }
       out.push({ label: root.quietGlyph, on: p.quiet === true, right: true,
         tooltip: "Quiet: muted color, never warms", act: { t: "quiet", part: spec.key } })
+      var at = g.partsOrder.indexOf(spec.key)
+      if (at >= 0) {
+        out.push({ label: "↑", right: true, enabled: at > 0, act: { t: "movePart", part: spec.key, d: -1 } })
+        out.push({ label: "↓", right: true, enabled: at < g.partsOrder.length - 1, act: { t: "movePart", part: spec.key, d: 1 } })
+      }
     } else if (spec.type === "choice") {
       for (i = 0; i < spec.options.length; i++)
         out.push({ label: spec.options[i].label, on: g[spec.key] === spec.options[i].value,
@@ -254,7 +293,9 @@ Panel {
       for (var k in src) next[k] = src[k]
       var flip = act.t === "toggle" ? act.k : "quiet"
       next[flip] = next[flip] !== true
-      root.patchField(id, act.part, next)
+      var patch = {}
+      patch[act.part] = next
+      host.patchGroup(id, patch)
     } else if (act.t === "set") {
       root.patchField(id, act.field, act.v)
     } else if (act.t === "flag") {
@@ -263,6 +304,10 @@ Panel {
       host.stepGroupLimit(id, act.field, act.d)
     } else if (act.t === "reset") {
       host.resetGroup(id)
+    } else if (act.t === "movePart") {
+      host.movePart(id, act.part, act.d)
+    } else if (act.t === "icon") {
+      host.setGroupIcon(id, act.k, act.v)
     }
   }
 
@@ -578,7 +623,7 @@ Panel {
                   id: header
                   width: parent.width
                   groupLabel: Metrics.GROUP_LABELS[card.device] || card.device
-                  groupGlyph: Metrics.GLYPH[card.device] || ""
+                  groupGlyph: root.iconGlyph(card.group, card.device, "label")
                   groupEnabled: card.isOn
                   expanded: card.expanded
                   atFirst: card.index === 0

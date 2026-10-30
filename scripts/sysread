@@ -1330,7 +1330,7 @@ emit_reading() {
     "$VAL_CPU" "$VAL_TEMP" "$VAL_MEM" "$VAL_GPU" "$VAL_GPU_TEMP" "$gpu_source" "$GPU_SOURCES_JSON" "$FANS_JSON" \
     "$VAL_CPU_MHZ" "$VAL_GPU_MHZ" "$VAL_MEM_USED" "$VAL_MEM_TOTAL" \
     "$VAL_SWAP_USED" "$VAL_SWAP_TOTAL" "$VAL_CPU_MODEL_JSON" "$VAL_CPU_CORES" \
-    "$LOAD_JSON" "$GPU_DETAIL_JSON" "$NET_JSON" "$DISK_JSON"
+    "$LOAD_JSON" "$GPU_DETAIL_JSON" "$NET_JSON" "$DISK_JSON" 2>/dev/null
 }
 
 # needs_sensors: succeeds when a wanted provider reads the hwmon or
@@ -1398,11 +1398,11 @@ main() {
   # Every line, the first included, reports deltas over at least 0.2 s.
   prime_deltas
   pause 0.2
-  emit_reading
+  emit_reading || { [[ "$mode" == "loop" ]] && return 0; return 1; }
   if [[ "$mode" == "loop" ]]; then
     while true; do
       pause "$interval"
-      emit_reading
+      emit_reading || return 0
     done
   fi
 }

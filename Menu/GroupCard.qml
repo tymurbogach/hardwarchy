@@ -115,6 +115,7 @@ CursorSurface {
 
         delegate: MetricButton {
           required property var modelData
+          required property int index
 
           pieces: modelData.pieces
           interactive: false
@@ -127,7 +128,8 @@ CursorSurface {
           warmth: root.groupEnabled ? root.previewWarmth : 0
           iconGap: root.iconGap
           partGap: root.partGap
-          sideMargin: root.metricGap / 2
+          sideMargin: 0
+          leadingGap: index > 0 ? root.metricGap : 0
         }
       }
     }
