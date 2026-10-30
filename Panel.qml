@@ -591,6 +591,7 @@ Panel {
                   previewWarmth: root.prefs ? root.prefs.colorIntensity / 100 : 1
                   iconGap: root.hostWidget ? Style.spaceReal(root.hostWidget.iconGap) : 0
                   partGap: root.hostWidget ? Style.spaceReal(root.hostWidget.partGap) : 0
+                  metricGap: root.hostWidget ? Style.spaceReal(root.hostWidget.metricGap) : 0
                   foreground: root.fg
                   accent: root.ac
                   fontFamily: root.ff

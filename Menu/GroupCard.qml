@@ -34,6 +34,7 @@ CursorSurface {
   property real previewWarmth: 1
   property real iconGap: 0
   property real partGap: 0
+  property real metricGap: 0
   property string fontFamily: "monospace"
 
   signal pressed(int index)
@@ -126,7 +127,7 @@ CursorSurface {
           warmth: root.groupEnabled ? root.previewWarmth : 0
           iconGap: root.iconGap
           partGap: root.partGap
-          sideMargin: Style.spaceReal(3)
+          sideMargin: root.metricGap / 2
         }
       }
     }
