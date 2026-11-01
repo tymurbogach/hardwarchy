@@ -119,6 +119,11 @@ function modesPiece(kind, text, ratio, pad, quiet, severity) {
 function modesMark(text, quiet, severity) {
   var mark = modesPiece("mark", text, -1, 0, quiet, severity);
   mark.isMark = true;
+  // The graphics-card glyph draws shorter than its font ink bounds.
+  if (text === MODES_ICON_OPTIONS.gpu[1]) {
+    mark.opticalScale = 1.4;
+    mark.opticalYOffset = 0.12;
+  }
   return mark;
 }
 

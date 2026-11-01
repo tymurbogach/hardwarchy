@@ -40,10 +40,9 @@ Item {
   property bool dimmed: false
   property string tooltipText: ""
 
-  // About the height of the icon ink, and half as wide: sized from the
-  // font so the gauge keeps its proportion at any theme font size.
-  property real gaugeHeight: Math.round(root.fontSize * 0.93)
-  property real gaugeWidth: Math.max(4, Math.round(root.gaugeHeight / 2))
+  // Match the actual digit ink at every theme font size.
+  readonly property real gaugeHeight: Math.max(1, digitInk.tightBoundingRect.height)
+  readonly property real gaugeWidth: Math.max(4, Math.round(root.gaugeHeight / 2))
 
   // The clickable contract the bar checks before dispatching a press.
   property bool interactive: true
@@ -84,10 +83,8 @@ Item {
     return 0
   }
 
-  // Every reading opens with a digit. Its left bearing comes off the
-  // gap, so the gap is ink-to-ink on that side too. Its ink centre is
-  // where the gauge centres: a text centres its line box, whose middle
-  // sits below the ink, so a gauge centred on the box reads low.
+  // Use the digit ink for sizing and alignment. A line box extends
+  // below the visible digits, so centering on the line box reads low.
   TextMetrics {
     id: digitInk
     font.family: root.fontFamily
@@ -156,12 +153,13 @@ Item {
           font.pixelSize: root.fontSize
           text: piece.kind === "mark" ? piece.modelData.text : ""
         }
-        // Some Nerd Font glyphs are much smaller than others at the same
-        // pixel size. Size icons by their ink, but keep words and R/W tags.
+        // Choose a close font size, then correct its rasterized ink height.
+        // Font pixel sizes are integral, so font size alone cannot always
+        // match the digits. Keep words and R/W tags at normal text size.
         readonly property real markSize: kind !== "mark" || modelData.isWord || modelData.isTag
           ? root.fontSize
-          : root.fontSize * Math.min(2, Math.max(0.85,
-              root.gaugeHeight / Math.max(1, baseInk.tightBoundingRect.height)))
+          : Math.max(1, root.fontSize * root.gaugeHeight
+              / Math.max(1, baseInk.tightBoundingRect.height))
         TextMetrics {
           id: ink
           font.family: root.fontFamily
@@ -170,8 +168,11 @@ Item {
         }
         readonly property real inkLeft: ink.tightBoundingRect.width > 0 ? ink.tightBoundingRect.x : 0
         readonly property real inkWidth: ink.tightBoundingRect.width > 0 ? ink.tightBoundingRect.width : ink.advanceWidth
+        readonly property real markScale: kind !== "mark" || modelData.isWord || modelData.isTag
+          || ink.tightBoundingRect.height <= 0 ? 1
+          : root.gaugeHeight / ink.tightBoundingRect.height * (modelData.opticalScale || 1)
 
-        width: gap + (kind === "mark" ? inkWidth
+        width: gap + (kind === "mark" ? inkWidth * markScale
           : kind === "gauge" ? root.gaugeWidth
           : padItem.implicitWidth + mainItem.implicitWidth - root.digitBearing)
         height: root.contentHeight
@@ -179,10 +180,14 @@ Item {
         Text {
           id: markText
           visible: piece.kind === "mark"
-          x: piece.gap - piece.inkLeft
+          x: piece.gap - piece.inkLeft * piece.markScale
           // Align each glyph's ink centre with the digits and gauge.
           y: root.gaugeY + root.gaugeHeight / 2
             - (markText.baselineOffset + ink.tightBoundingRect.y + ink.tightBoundingRect.height / 2)
+              * piece.markScale
+            + root.gaugeHeight * (piece.modelData.opticalYOffset || 0)
+          transformOrigin: Item.TopLeft
+          scale: piece.markScale
           text: piece.kind === "mark" ? piece.modelData.text : ""
           color: root.pieceColor(piece.modelData)
           font.family: root.fontFamily

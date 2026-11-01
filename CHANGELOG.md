@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.4
+
+- Match icon and gauge height to the visible digits at every font size.
+- Correct the graphics card icon's visual size and vertical position.
+
+## 2.3.3
+
+- Add icon choices and movable parts for each hardware group.
+- Apply shared gaps consistently across the bar and menu previews.
+
 ## 2.3.2
 
 - Harden the update check: a hung check no longer blocks retries, and the
